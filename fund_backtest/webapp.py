@@ -73,7 +73,7 @@ APP_HTML = r"""<!doctype html>
       font-size: 18px;
       line-height: 1;
     }
-    input {
+    input, select {
       width: 100%;
       height: 36px;
       border: 1px solid var(--line);
@@ -329,6 +329,21 @@ APP_HTML = r"""<!doctype html>
           <label><span>初始资金</span><input id="initialCash" type="number" min="1" step="100" value="10000"></label>
           <label><span>起始日期</span><input id="startDate" type="date" value="2021-01-01"></label>
           <label><span>结束日期</span><input id="endDate" type="date"></label>
+          <label><span>再平衡</span><select id="rebalanceFrequency">
+            <option value="none">不再平衡</option>
+            <option value="monthly">每月</option>
+            <option value="quarterly">每季度</option>
+            <option value="yearly">每年</option>
+          </select></label>
+          <label><span>交易费率</span><input id="feeRate" type="number" min="0" step="0.0001" value="0"></label>
+          <label><span>定投金额</span><input id="contributionAmount" type="number" min="0" step="100" value="0"></label>
+          <label><span>定投频率</span><select id="contributionFrequency">
+            <option value="none">不定投</option>
+            <option value="weekly">每周</option>
+            <option value="monthly" selected>每月</option>
+            <option value="quarterly">每季度</option>
+            <option value="yearly">每年</option>
+          </select></label>
           <label><span>缓存目录</span><input id="cacheDir" value="data/fund_cache"></label>
         </div>
         <div class="checkline"><input id="refresh" type="checkbox"><span>刷新天天基金数据</span></div>
@@ -433,6 +448,10 @@ APP_HTML = r"""<!doctype html>
         start: $("startDate").value || null,
         end: $("endDate").value || null,
         cache_dir: $("cacheDir").value || "data/fund_cache",
+        rebalance_frequency: $("rebalanceFrequency").value,
+        fee_rate: Number($("feeRate").value || 0),
+        contribution_amount: Number($("contributionAmount").value || 0),
+        contribution_frequency: $("contributionFrequency").value,
         refresh: $("refresh").checked
       };
     }
@@ -477,8 +496,14 @@ APP_HTML = r"""<!doctype html>
         ["total_return", "总收益", formatPercent],
         ["annual_return", "年化收益", formatPercent],
         ["max_drawdown", "最大回撤", formatPercent],
+        ["total_contributions", "累计投入", formatMoney],
+        ["net_profit", "累计盈利", formatMoney],
+        ["return_on_contributions", "投入收益率", formatPercent],
         ["volatility", "波动率", formatPercent],
-        ["sharpe", "Sharpe", (v) => Number(v).toFixed(3)]
+        ["sharpe", "Sharpe", (v) => Number(v).toFixed(3)],
+        ["total_fees", "累计费用", formatMoney],
+        ["rebalance_count", "再平衡次数", (v) => Number(v).toFixed(0)],
+        ["average_turnover", "平均换手", formatPercent]
       ];
       $("metrics").innerHTML = specs.map(([key, name, formatter]) => `
         <div class="metric">
@@ -662,6 +687,10 @@ def run_backtest_payload(payload: dict[str, Any]) -> dict[str, Any]:
         start=_blank_to_none(payload.get("start")),
         end=_blank_to_none(payload.get("end")),
         cache_dir=str(payload.get("cache_dir") or "data/fund_cache"),
+        rebalance_frequency=str(payload.get("rebalance_frequency") or "none"),  # type: ignore[arg-type]
+        fee_rate=float(payload.get("fee_rate") or 0.0),
+        contribution_amount=float(payload.get("contribution_amount") or 0.0),
+        contribution_frequency=str(payload.get("contribution_frequency") or "monthly"),  # type: ignore[arg-type]
         refresh=bool(payload.get("refresh", False)),
     )
     return serialize_backtest_result(result, weights)
@@ -697,6 +726,7 @@ def serialize_backtest_result(
             "end": values.index.max().strftime("%Y-%m-%d"),
         },
         "metrics": result.metrics,
+        "settings": result.metadata,
         "weights": normalized,
         "final_holdings": holdings,
         "series": [
@@ -704,6 +734,7 @@ def serialize_backtest_result(
                 "date": index.strftime("%Y-%m-%d"),
                 "total": float(row["total"]),
                 "drawdown": float(row["drawdown"]),
+                "cumulative_contributions": float(row.get("cumulative_contributions", 0.0)),
             }
             for index, row in sampled.iterrows()
         ],

@@ -18,6 +18,12 @@ METRIC_LABELS = {
     "volatility": "Volatility",
     "sharpe": "Sharpe",
     "elapsed_days": "Elapsed days",
+    "total_fees": "Total fees",
+    "rebalance_count": "Rebalances",
+    "average_turnover": "Average turnover",
+    "total_contributions": "Total contributions",
+    "net_profit": "Net profit",
+    "return_on_contributions": "Return on contributions",
 }
 
 
@@ -51,6 +57,7 @@ def render_html_report(
     start_date = values.index.min().strftime("%Y-%m-%d")
     end_date = values.index.max().strftime("%Y-%m-%d")
     generated_at = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+    settings = _render_settings(result)
 
     return f"""<!doctype html>
 <html lang="en">
@@ -202,6 +209,8 @@ def render_html_report(
       {_render_metric_cards(result.metrics)}
     </div>
 
+    {settings}
+
     <div class="grid two-col">
       <section>
         <h2>Portfolio Value</h2>
@@ -236,6 +245,11 @@ def _render_metric_cards(metrics: Mapping[str, float]) -> str:
         "max_drawdown",
         "volatility",
         "sharpe",
+        "total_contributions",
+        "net_profit",
+        "return_on_contributions",
+        "total_fees",
+        "rebalance_count",
         "elapsed_days",
     ]
     return "\n".join(
@@ -257,6 +271,26 @@ def _render_weights_table(weights: Mapping[str, float]) -> str:
       <thead><tr><th>Fund</th><th>Weight</th></tr></thead>
       <tbody>{rows}</tbody>
     </table>"""
+
+
+def _render_settings(result: BacktestResult) -> str:
+    if not result.metadata:
+        return ""
+    frequency = str(result.metadata.get("rebalance_frequency", "none"))
+    fee_rate = float(result.metadata.get("fee_rate", 0.0))
+    contribution_amount = float(result.metadata.get("contribution_amount", 0.0))
+    contribution_frequency = str(result.metadata.get("contribution_frequency", "none"))
+    return f"""<section>
+      <h2>Settings</h2>
+      <table>
+        <tbody>
+          <tr><td>Rebalance frequency</td><td>{escape(frequency)}</td></tr>
+          <tr><td>Trade fee rate</td><td>{fee_rate:.3%}</td></tr>
+          <tr><td>Regular contribution</td><td>{contribution_amount:,.2f}</td></tr>
+          <tr><td>Contribution frequency</td><td>{escape(contribution_frequency)}</td></tr>
+        </tbody>
+      </table>
+    </section>"""
 
 
 def _render_final_holdings(values: pd.DataFrame, weights: Mapping[str, float]) -> str:
@@ -336,11 +370,18 @@ def _downsample(series: pd.Series, max_points: int) -> pd.Series:
 
 
 def _format_metric(key: str, value: float) -> str:
-    if key in {"total_return", "annual_return", "max_drawdown", "volatility"}:
+    if key in {
+        "total_return",
+        "annual_return",
+        "max_drawdown",
+        "volatility",
+        "average_turnover",
+        "return_on_contributions",
+    }:
         return f"{value:.2%}"
-    if key in {"start_value", "end_value"}:
+    if key in {"start_value", "end_value", "total_fees", "total_contributions", "net_profit"}:
         return f"{value:,.2f}"
-    if key == "elapsed_days":
+    if key in {"elapsed_days", "rebalance_count"}:
         return f"{value:,.0f}"
     return f"{value:.3f}"
 

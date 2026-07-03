@@ -36,6 +36,18 @@ def build_parser() -> argparse.ArgumentParser:
     backtest.add_argument("--end", help="End date, for example 2025-12-31.")
     backtest.add_argument("--cache-dir", default="data/fund_cache")
     backtest.add_argument("--refresh", action="store_true", help="Ignore cache and refetch data.")
+    backtest.add_argument(
+        "--rebalance-frequency",
+        choices=["none", "monthly", "quarterly", "yearly"],
+        default="none",
+    )
+    backtest.add_argument("--fee-rate", type=float, default=0.0, help="One-way trade fee rate.")
+    backtest.add_argument("--contribution-amount", type=float, default=0.0)
+    backtest.add_argument(
+        "--contribution-frequency",
+        choices=["none", "weekly", "monthly", "quarterly", "yearly"],
+        default="monthly",
+    )
     backtest.add_argument("--output", default="output/backtest_values.csv")
     backtest.add_argument("--report", default="output/backtest_report.html")
 
@@ -57,6 +69,10 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
     start = args.start if args.start is not None else config.get("start")
     end = args.end if args.end is not None else config.get("end")
     cache_dir = str(config.get("cache_dir", args.cache_dir))
+    rebalance_frequency = str(config.get("rebalance_frequency", args.rebalance_frequency))
+    fee_rate = float(config.get("fee_rate", args.fee_rate))
+    contribution_amount = float(config.get("contribution_amount", args.contribution_amount))
+    contribution_frequency = str(config.get("contribution_frequency", args.contribution_frequency))
     output = str(config.get("output", args.output))
     report = str(config.get("report", args.report)) if args.report else None
 
@@ -66,6 +82,10 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
         start=start,
         end=end,
         cache_dir=cache_dir,
+        rebalance_frequency=rebalance_frequency,  # type: ignore[arg-type]
+        fee_rate=fee_rate,
+        contribution_amount=contribution_amount,
+        contribution_frequency=contribution_frequency,  # type: ignore[arg-type]
         refresh=args.refresh,
     )
 
@@ -82,7 +102,13 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
     if report_path:
         print(f"Report: {report_path}")
     for key, value in result.metrics.items():
-        if key.endswith("return") or key in {"annual_return", "max_drawdown", "volatility"}:
+        if key.endswith("return") or key in {
+            "annual_return",
+            "max_drawdown",
+            "volatility",
+            "average_turnover",
+            "return_on_contributions",
+        }:
             print(f"{key}: {value:.2%}")
         else:
             print(f"{key}: {value:.4f}")

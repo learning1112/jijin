@@ -10,6 +10,12 @@ It keeps the original exploration scripts intact and adds:
 - CLI entry point
 - HTML report with portfolio value, drawdown, weights, and final holdings
 - Local visual web UI
+- Rebalancing frequency and trade fee assumptions
+- Regular contribution / dollar-cost averaging mode
+
+For non-money-market funds, the Eastmoney parser prefers `Data_ACWorthTrend`,
+which is the accumulated net-worth trend. If that series is unavailable it falls
+back to `Data_netWorthTrend`. Money-market funds use `Data_millionCopiesIncome`.
 
 ## Start the visual UI
 
@@ -42,6 +48,10 @@ python -m fund_backtest.cli backtest `
   --fund 012693=0.25 `
   --fund 513110=0.25 `
   --start 2021-01-01 `
+  --rebalance-frequency monthly `
+  --fee-rate 0.001 `
+  --contribution-amount 1000 `
+  --contribution-frequency monthly `
   --output output/backtest_values.csv
 ```
 
@@ -55,8 +65,18 @@ Fetched source data is cached in `data/fund_cache/`.
 python -m fund_backtest.cli backtest --portfolio examples/portfolio.json
 ```
 
-The config file can define `initial_cash`, `start`, `end`, `output`, `report`,
+The config file can define `initial_cash`, `start`, `end`, `rebalance_frequency`,
+`fee_rate`, `contribution_amount`, `contribution_frequency`, `output`, `report`,
 `cache_dir`, and a `funds` object mapping fund codes to weights.
+
+## Run a regular-contribution backtest
+
+```powershell
+python -m fund_backtest.cli backtest --portfolio examples/dca_portfolio.json
+```
+
+The regular contribution is invested on the first available trading day in each
+selected period, including the first backtest date.
 
 ## Refresh source data
 

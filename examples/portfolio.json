@@ -1,6 +1,8 @@
 {
   "initial_cash": 10000,
   "start": "2021-01-01",
+  "rebalance_frequency": "monthly",
+  "fee_rate": 0.001,
   "output": "output/example_backtest_values.csv",
   "report": "output/example_backtest_report.html",
   "funds": {

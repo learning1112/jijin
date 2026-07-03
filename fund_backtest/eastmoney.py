@@ -94,20 +94,20 @@ def parse_pingzhongdata(text: str, code: str = "") -> FundSeries:
 
     code = str(code).zfill(6) if code else ""
 
-    if "Data_millionCopiesIncome" in text:
-        rows = _load_js_assignment(text, "Data_millionCopiesIncome")
+    rows = _try_load_js_assignment(text, "Data_millionCopiesIncome")
+    if rows:
         frame = _frame_from_pairs(rows)
         return FundSeries(code=code, data_type="million_income", frame=frame)
 
-    if "Data_netWorthTrend" in text:
-        rows = _load_js_assignment(text, "Data_netWorthTrend")
-        frame = _frame_from_records(rows, value_key="y")
-        return FundSeries(code=code, data_type="net_worth", frame=frame)
-
-    if "Data_ACWorthTrend" in text:
-        rows = _load_js_assignment(text, "Data_ACWorthTrend")
+    rows = _try_load_js_assignment(text, "Data_ACWorthTrend")
+    if rows:
         frame = _frame_from_pairs(rows)
         return FundSeries(code=code, data_type="accumulated_net_worth", frame=frame)
+
+    rows = _try_load_js_assignment(text, "Data_netWorthTrend")
+    if rows:
+        frame = _frame_from_records(rows, value_key="y")
+        return FundSeries(code=code, data_type="net_worth", frame=frame)
 
     raise ValueError("No supported net-worth series found in pingzhongdata response.")
 
@@ -123,6 +123,13 @@ def _load_js_assignment(text: str, variable: str):
     raw = _extract_js_assignment(text, variable)
     cleaned = raw.replace("undefined", "null")
     return json.loads(cleaned)
+
+
+def _try_load_js_assignment(text: str, variable: str):
+    try:
+        return _load_js_assignment(text, variable)
+    except ValueError:
+        return None
 
 
 def _extract_js_assignment(text: str, variable: str) -> str:

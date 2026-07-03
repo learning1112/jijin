@@ -33,6 +33,18 @@ class ParsePingzhongdataTests(unittest.TestCase):
         self.assertEqual(series.data_type, "million_income")
         self.assertEqual(list(series.frame["value"]), [1.0, 2.0])
 
+    def test_accumulated_net_worth_is_preferred_over_unit_net_worth(self) -> None:
+        raw = (
+            "var Data_millionCopiesIncome = [];"
+            "var Data_netWorthTrend = [{\"x\":1609459200000,\"y\":1.0}];"
+            "var Data_ACWorthTrend = [[1609459200000,1.5],[1609545600000,1.6]];"
+        )
+
+        series = parse_pingzhongdata(raw, code="000001")
+
+        self.assertEqual(series.data_type, "accumulated_net_worth")
+        self.assertEqual(list(series.frame["value"]), [1.5, 1.6])
+
 
 class BacktestTests(unittest.TestCase):
     def test_net_worth_curve(self) -> None:
@@ -57,7 +69,65 @@ class BacktestTests(unittest.TestCase):
 
         result = run_backtest_from_series({"000307": series}, {"000307": 1.0})
 
-        self.assertAlmostEqual(result.values["total"].iloc[-1], 10020.01, places=2)
+        self.assertAlmostEqual(result.values["total"].iloc[-1], 10010.0, places=2)
+
+    def test_monthly_rebalance_changes_holdings(self) -> None:
+        dates = pd.to_datetime(["2024-01-31", "2024-02-01", "2024-02-02"])
+        fast = FundSeries(
+            code="000001",
+            data_type="net_worth",
+            frame=pd.DataFrame({"value": [1.0, 2.0, 4.0]}, index=dates),
+        )
+        flat = FundSeries(
+            code="000002",
+            data_type="net_worth",
+            frame=pd.DataFrame({"value": [1.0, 1.0, 1.0]}, index=dates),
+        )
+
+        result = run_backtest_from_series(
+            {"000001": fast, "000002": flat},
+            {"000001": 0.5, "000002": 0.5},
+            rebalance_frequency="monthly",
+        )
+
+        self.assertAlmostEqual(result.values["total"].iloc[-1], 22500.0)
+        self.assertEqual(result.metrics["rebalance_count"], 1.0)
+        self.assertAlmostEqual(result.metrics["average_turnover"], 1 / 3)
+        self.assertTrue(result.values["rebalanced"].iloc[1])
+
+    def test_fee_rate_reduces_initial_investment(self) -> None:
+        frame = pd.DataFrame(
+            {"value": [1.0, 1.0]},
+            index=pd.to_datetime(["2024-01-01", "2024-01-02"]),
+        )
+        series = FundSeries(code="000001", data_type="net_worth", frame=frame)
+
+        result = run_backtest_from_series(
+            {"000001": series},
+            {"000001": 1.0},
+            fee_rate=0.01,
+        )
+
+        self.assertAlmostEqual(result.values["total"].iloc[-1], 9900.0)
+        self.assertAlmostEqual(result.metrics["total_fees"], 100.0)
+
+    def test_monthly_contribution_can_start_without_initial_cash(self) -> None:
+        dates = pd.to_datetime(["2024-01-31", "2024-02-01", "2024-02-02"])
+        frame = pd.DataFrame({"value": [1.0, 2.0, 2.0]}, index=dates)
+        series = FundSeries(code="000001", data_type="net_worth", frame=frame)
+
+        result = run_backtest_from_series(
+            {"000001": series},
+            {"000001": 1.0},
+            initial_cash=0.0,
+            contribution_amount=1000.0,
+            contribution_frequency="monthly",
+        )
+
+        self.assertEqual(list(result.values["contribution"]), [1000.0, 1000.0, 0.0])
+        self.assertAlmostEqual(result.values["total"].iloc[-1], 3000.0)
+        self.assertAlmostEqual(result.metrics["total_contributions"], 2000.0)
+        self.assertAlmostEqual(result.metrics["return_on_contributions"], 0.5)
 
 
 class ReportTests(unittest.TestCase):

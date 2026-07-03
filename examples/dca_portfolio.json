@@ -1,0 +1,14 @@
+{
+  "initial_cash": 0,
+  "contribution_amount": 1000,
+  "contribution_frequency": "monthly",
+  "start": "2021-01-01",
+  "rebalance_frequency": "none",
+  "fee_rate": 0.001,
+  "output": "output/dca_backtest_values.csv",
+  "report": "output/dca_backtest_report.html",
+  "funds": {
+    "000307": 0.5,
+    "513110": 0.5
+  }
+}
