@@ -8,6 +8,30 @@ It keeps the original exploration scripts intact and adds:
 - Portfolio backtest engine
 - Metrics: total return, annualized return, max drawdown, volatility, Sharpe
 - CLI entry point
+- HTML report with portfolio value, drawdown, weights, and final holdings
+- Local visual web UI
+
+## Start the visual UI
+
+```powershell
+python -m fund_backtest.cli web --host 127.0.0.1 --port 8000
+```
+
+Then open `http://127.0.0.1:8000/`.
+
+## Create the Conda environment
+
+```powershell
+conda env create -f environment.yml
+conda activate jijin-backtest
+```
+
+If the environment already exists:
+
+```powershell
+conda env update -f environment.yml --prune
+conda activate jijin-backtest
+```
 
 ## Run a backtest
 
@@ -22,7 +46,17 @@ python -m fund_backtest.cli backtest `
 ```
 
 The command writes portfolio values to `output/backtest_values.csv`.
+It also writes an HTML report to `output/backtest_report.html`.
 Fetched source data is cached in `data/fund_cache/`.
+
+## Run from a portfolio config
+
+```powershell
+python -m fund_backtest.cli backtest --portfolio examples/portfolio.json
+```
+
+The config file can define `initial_cash`, `start`, `end`, `output`, `report`,
+`cache_dir`, and a `funds` object mapping fund codes to weights.
 
 ## Refresh source data
 

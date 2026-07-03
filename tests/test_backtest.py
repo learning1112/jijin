@@ -6,6 +6,8 @@ import pandas as pd
 
 from fund_backtest.backtest import run_backtest_from_series
 from fund_backtest.eastmoney import FundSeries, parse_pingzhongdata
+from fund_backtest.report import render_html_report
+from fund_backtest.webapp import serialize_backtest_result
 
 
 class ParsePingzhongdataTests(unittest.TestCase):
@@ -56,6 +58,38 @@ class BacktestTests(unittest.TestCase):
         result = run_backtest_from_series({"000307": series}, {"000307": 1.0})
 
         self.assertAlmostEqual(result.values["total"].iloc[-1], 10020.01, places=2)
+
+
+class ReportTests(unittest.TestCase):
+    def test_render_html_report(self) -> None:
+        frame = pd.DataFrame(
+            {"value": [1.0, 1.1]},
+            index=pd.to_datetime(["2024-01-01", "2024-01-02"]),
+        )
+        series = FundSeries(code="000001", data_type="net_worth", frame=frame)
+        result = run_backtest_from_series({"000001": series}, {"000001": 1.0})
+
+        html = render_html_report(result, {"000001": 1.0})
+
+        self.assertIn("Fund Backtest Report", html)
+        self.assertIn("Portfolio Value", html)
+        self.assertIn("000001", html)
+
+
+class WebAppTests(unittest.TestCase):
+    def test_serialize_backtest_result(self) -> None:
+        frame = pd.DataFrame(
+            {"value": [1.0, 1.1]},
+            index=pd.to_datetime(["2024-01-01", "2024-01-02"]),
+        )
+        series = FundSeries(code="000001", data_type="net_worth", frame=frame)
+        result = run_backtest_from_series({"000001": series}, {"000001": 1.0})
+
+        payload = serialize_backtest_result(result, {"000001": 1.0})
+
+        self.assertEqual(payload["period"]["start"], "2024-01-01")
+        self.assertEqual(payload["final_holdings"][0]["code"], "000001")
+        self.assertEqual(len(payload["series"]), 2)
 
 
 if __name__ == "__main__":

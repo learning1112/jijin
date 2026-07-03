@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import pandas as pd
 
 from .backtest import run_backtest
 from .eastmoney import EastmoneyFundClient
+from .report import save_html_report
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -16,6 +18,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_backtest(args)
     if args.command == "fund-codes":
         return _cmd_fund_codes(args)
+    if args.command == "web":
+        return _cmd_web(args)
     parser.print_help()
     return 1
 
@@ -25,43 +29,58 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command")
 
     backtest = subparsers.add_parser("backtest", help="Run a portfolio backtest.")
-    backtest.add_argument(
-        "--fund",
-        action="append",
-        required=True,
-        metavar="CODE=WEIGHT",
-        help="Fund code and weight. Repeat for multiple funds.",
-    )
+    backtest.add_argument("--portfolio", help="JSON file with funds and optional defaults.")
+    backtest.add_argument("--fund", action="append", metavar="CODE=WEIGHT")
     backtest.add_argument("--initial-cash", type=float, default=10000.0)
     backtest.add_argument("--start", help="Start date, for example 2021-01-01.")
     backtest.add_argument("--end", help="End date, for example 2025-12-31.")
     backtest.add_argument("--cache-dir", default="data/fund_cache")
     backtest.add_argument("--refresh", action="store_true", help="Ignore cache and refetch data.")
     backtest.add_argument("--output", default="output/backtest_values.csv")
+    backtest.add_argument("--report", default="output/backtest_report.html")
 
     fund_codes = subparsers.add_parser("fund-codes", help="Download the public fund list.")
     fund_codes.add_argument("--output", default="data/fund_codes.csv")
+
+    web = subparsers.add_parser("web", help="Start the local visual backtest UI.")
+    web.add_argument("--host", default="127.0.0.1")
+    web.add_argument("--port", type=int, default=8000)
+    web.add_argument("--open", action="store_true")
 
     return parser
 
 
 def _cmd_backtest(args: argparse.Namespace) -> int:
-    weights = dict(_parse_fund_arg(item) for item in args.fund)
+    config = _load_portfolio_config(args.portfolio) if args.portfolio else {}
+    weights = _resolve_weights(args, config)
+    initial_cash = float(config.get("initial_cash", args.initial_cash))
+    start = args.start if args.start is not None else config.get("start")
+    end = args.end if args.end is not None else config.get("end")
+    cache_dir = str(config.get("cache_dir", args.cache_dir))
+    output = str(config.get("output", args.output))
+    report = str(config.get("report", args.report)) if args.report else None
+
     result = run_backtest(
         weights,
-        initial_cash=args.initial_cash,
-        start=args.start,
-        end=args.end,
-        cache_dir=args.cache_dir,
+        initial_cash=initial_cash,
+        start=start,
+        end=end,
+        cache_dir=cache_dir,
         refresh=args.refresh,
     )
 
-    output_path = Path(args.output)
+    output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     result.values.reset_index(names="date").to_csv(output_path, index=False, encoding="utf-8")
 
+    report_path = None
+    if report:
+        report_path = save_html_report(result, weights, report)
+
     print("Backtest complete")
     print(f"Output: {output_path}")
+    if report_path:
+        print(f"Report: {report_path}")
     for key, value in result.metrics.items():
         if key.endswith("return") or key in {"annual_return", "max_drawdown", "volatility"}:
             print(f"{key}: {value:.2%}")
@@ -81,11 +100,42 @@ def _cmd_fund_codes(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_web(args: argparse.Namespace) -> int:
+    from .webapp import run_server
+
+    run_server(args.host, args.port, open_browser=args.open)
+    return 0
+
+
 def _parse_fund_arg(value: str) -> tuple[str, float]:
     if "=" not in value:
         raise argparse.ArgumentTypeError("--fund must look like CODE=WEIGHT")
     code, weight = value.split("=", 1)
     return code.strip().zfill(6), float(weight)
+
+
+def _load_portfolio_config(path: str) -> dict:
+    with open(path, "r", encoding="utf-8") as file:
+        config = json.load(file)
+    if not isinstance(config, dict):
+        raise argparse.ArgumentTypeError("Portfolio config must be a JSON object.")
+    return config
+
+
+def _resolve_weights(args: argparse.Namespace, config: dict) -> dict[str, float]:
+    if args.fund:
+        return dict(_parse_fund_arg(item) for item in args.fund)
+
+    funds = config.get("funds")
+    if isinstance(funds, dict):
+        return {str(code).zfill(6): float(weight) for code, weight in funds.items()}
+    if isinstance(funds, list):
+        return {
+            str(item["code"]).zfill(6): float(item["weight"])
+            for item in funds
+        }
+
+    raise argparse.ArgumentTypeError("Provide --fund CODE=WEIGHT or --portfolio with a funds object.")
 
 
 if __name__ == "__main__":

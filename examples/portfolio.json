@@ -1,0 +1,12 @@
+{
+  "initial_cash": 10000,
+  "start": "2021-01-01",
+  "output": "output/example_backtest_values.csv",
+  "report": "output/example_backtest_report.html",
+  "funds": {
+    "000307": 0.25,
+    "511010": 0.25,
+    "012693": 0.25,
+    "513110": 0.25
+  }
+}
