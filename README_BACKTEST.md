@@ -12,6 +12,7 @@ It keeps the original exploration scripts intact and adds:
 - Local visual web UI
 - Rebalancing frequency and trade fee assumptions
 - Regular contribution / dollar-cost averaging mode
+- Annual metrics table in the visual UI and HTML reports
 
 For non-money-market funds, the Eastmoney parser prefers `Data_ACWorthTrend`,
 which is the accumulated net-worth trend. If that series is unavailable it falls

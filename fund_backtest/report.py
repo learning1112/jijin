@@ -209,6 +209,8 @@ def render_html_report(
       {_render_metric_cards(result.metrics)}
     </div>
 
+    {_render_annual_metrics_table(result.annual_metrics)}
+
     {settings}
 
     <div class="grid two-col">
@@ -271,6 +273,44 @@ def _render_weights_table(weights: Mapping[str, float]) -> str:
       <thead><tr><th>Fund</th><th>Weight</th></tr></thead>
       <tbody>{rows}</tbody>
     </table>"""
+
+
+def _render_annual_metrics_table(rows: list[dict[str, float]]) -> str:
+    if not rows:
+        return ""
+    body = "".join(
+        "<tr>"
+        f"<td>{int(row['year'])}</td>"
+        f"<td>{_format_metric('end_value', row['end_value'])}</td>"
+        f"<td>{_format_metric('total_return', row['total_return'])}</td>"
+        f"<td>{_format_metric('max_drawdown', row['max_drawdown'])}</td>"
+        f"<td>{_format_metric('total_contributions', row['total_contributions'])}</td>"
+        f"<td>{_format_metric('net_profit', row['net_profit'])}</td>"
+        f"<td>{_format_metric('return_on_contributions', row['return_on_contributions'])}</td>"
+        f"<td>{_format_metric('total_fees', row['total_fees'])}</td>"
+        f"<td>{_format_metric('rebalance_count', row['rebalance_count'])}</td>"
+        "</tr>"
+        for row in rows
+    )
+    return f"""<section>
+      <h2>Annual Metrics</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Year</th>
+            <th>End value</th>
+            <th>Return</th>
+            <th>Max drawdown</th>
+            <th>Contributions</th>
+            <th>Net profit</th>
+            <th>Contribution return</th>
+            <th>Fees</th>
+            <th>Rebalances</th>
+          </tr>
+        </thead>
+        <tbody>{body}</tbody>
+      </table>
+    </section>"""
 
 
 def _render_settings(result: BacktestResult) -> str:

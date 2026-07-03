@@ -359,6 +359,10 @@ APP_HTML = r"""<!doctype html>
           <h2>指标</h2>
           <div id="metrics" class="metrics"></div>
         </section>
+        <section class="panel">
+          <h2>年度指标</h2>
+          <div id="annualMetrics"></div>
+        </section>
         <div class="charts">
           <section class="panel chart-box">
             <div class="chart-title"><strong>资金曲线</strong><span id="valueScale"></span></div>
@@ -485,6 +489,7 @@ APP_HTML = r"""<!doctype html>
     function renderAll(data) {
       $("rangeLabel").textContent = `${data.period.start} 至 ${data.period.end}`;
       renderMetrics(data.metrics);
+      renderAnnualMetrics(data.annual_metrics || []);
       renderHoldings(data.final_holdings);
       drawLineChart("valueChart", data.series.map((row) => [row.date, row.total]), "#247d8f", "valueScale");
       drawLineChart("drawdownChart", data.series.map((row) => [row.date, row.drawdown * 100]), "#bd3f45", "drawdownScale", "%");
@@ -511,6 +516,44 @@ APP_HTML = r"""<!doctype html>
           <div class="value">${formatter(metrics[key] ?? 0)}</div>
         </div>
       `).join("");
+    }
+
+    function renderAnnualMetrics(rows) {
+      if (!rows.length) {
+        $("annualMetrics").innerHTML = `<div class="empty">暂无年度指标</div>`;
+        return;
+      }
+      $("annualMetrics").innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>年份</th>
+              <th>期末资产</th>
+              <th>年度收益</th>
+              <th>最大回撤</th>
+              <th>年度投入</th>
+              <th>年度盈利</th>
+              <th>投入收益率</th>
+              <th>费用</th>
+              <th>再平衡</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map((row) => `
+              <tr>
+                <td>${Number(row.year).toFixed(0)}</td>
+                <td>${formatMoney(row.end_value)}</td>
+                <td>${formatPercent(row.total_return)}</td>
+                <td>${formatPercent(row.max_drawdown)}</td>
+                <td>${formatMoney(row.total_contributions)}</td>
+                <td>${formatMoney(row.net_profit)}</td>
+                <td>${formatPercent(row.return_on_contributions)}</td>
+                <td>${formatMoney(row.total_fees)}</td>
+                <td>${Number(row.rebalance_count).toFixed(0)}</td>
+              </tr>`).join("")}
+          </tbody>
+        </table>
+      `;
     }
 
     function renderHoldings(rows) {
@@ -606,6 +649,7 @@ APP_HTML = r"""<!doctype html>
     window.addEventListener("resize", () => state.result && renderAll(state.result));
     defaultFunds.forEach(([code, weight]) => addFundRow(code, weight));
     renderMetrics({});
+    renderAnnualMetrics([]);
     $("holdings").innerHTML = `<div class="empty">暂无持仓</div>`;
   </script>
 </body>
@@ -677,9 +721,7 @@ class BacktestRequestHandler(BaseHTTPRequestHandler):
 
 def run_backtest_payload(payload: dict[str, Any]) -> dict[str, Any]:
     weights = _weights_from_payload(payload)
-    initial_cash = float(payload.get("initial_cash") or 10000.0)
-    if initial_cash <= 0:
-        raise ValueError("Initial cash must be positive.")
+    initial_cash = _float_or_default(payload.get("initial_cash"), 10000.0)
 
     result = run_backtest(
         weights,
@@ -726,6 +768,7 @@ def serialize_backtest_result(
             "end": values.index.max().strftime("%Y-%m-%d"),
         },
         "metrics": result.metrics,
+        "annual_metrics": result.annual_metrics,
         "settings": result.metadata,
         "weights": normalized,
         "final_holdings": holdings,
@@ -829,6 +872,13 @@ def _blank_to_none(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _float_or_default(value: Any, default: float) -> float:
+    if value is None:
+        return default
+    text = str(value).strip()
+    return default if text == "" else float(text)
 
 
 def _downsample_frame(frame: pd.DataFrame, *, max_points: int) -> pd.DataFrame:

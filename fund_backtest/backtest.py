@@ -19,6 +19,7 @@ class BacktestResult:
     values: pd.DataFrame
     metrics: dict[str, float]
     metadata: dict[str, object] = field(default_factory=dict)
+    annual_metrics: list[dict[str, float]] = field(default_factory=list)
 
 
 def run_backtest(
@@ -118,6 +119,7 @@ def run_backtest_from_series(
         if metrics["total_contributions"]
         else 0.0
     )
+    annual_metrics = calculate_annual_metrics(aligned)
     metadata = {
         "weights": normalized,
         "rebalance_frequency": rebalance_frequency,
@@ -125,7 +127,12 @@ def run_backtest_from_series(
         "contribution_amount": contribution_amount,
         "contribution_frequency": contribution_frequency,
     }
-    return BacktestResult(values=aligned, metrics=metrics, metadata=metadata)
+    return BacktestResult(
+        values=aligned,
+        metrics=metrics,
+        metadata=metadata,
+        annual_metrics=annual_metrics,
+    )
 
 
 def normalize_weights(weights: Mapping[str, float]) -> dict[str, float]:
@@ -177,6 +184,79 @@ def calculate_metrics(
         "sharpe": sharpe,
         "elapsed_days": float(elapsed_days),
     }
+
+
+def calculate_annual_metrics(values: pd.DataFrame) -> list[dict[str, float]]:
+    if values.empty:
+        return []
+
+    total = values["total"].dropna()
+    contribution = values.get("contribution", pd.Series(0.0, index=values.index))
+    annual_rows: list[dict[str, float]] = []
+
+    for year, year_values in values.groupby(values.index.year):
+        year_total = year_values["total"].dropna()
+        if year_total.empty:
+            continue
+
+        year_contribution = year_values.get(
+            "contribution",
+            pd.Series(0.0, index=year_values.index),
+        ).fillna(0.0)
+        year_returns = _cash_flow_adjusted_returns(year_total, year_contribution)
+        total_return = (
+            float((1.0 + year_returns).prod() - 1.0)
+            if not year_returns.empty
+            else 0.0
+        )
+        elapsed_days = max((year_total.index[-1] - year_total.index[0]).days, 0)
+        annual_return = (
+            (1.0 + total_return) ** (365.0 / elapsed_days) - 1.0
+            if elapsed_days > 0 and total_return > -1.0
+            else total_return
+        )
+        year_drawdown = year_total / year_total.cummax() - 1.0
+        volatility = float(year_returns.std() * sqrt(252)) if len(year_returns) > 1 else 0.0
+        sharpe = (
+            float((year_returns.mean() / year_returns.std()) * sqrt(252))
+            if len(year_returns) > 1 and year_returns.std() != 0
+            else 0.0
+        )
+        start_value = float(year_total.iloc[0])
+        end_value = float(year_total.iloc[-1])
+        total_contributions = float(year_contribution.sum())
+        first_day_contribution = float(year_contribution.iloc[0]) if len(year_contribution) else 0.0
+        additional_contributions = max(total_contributions - first_day_contribution, 0.0)
+        net_profit = end_value - start_value - additional_contributions
+        capital_base = start_value + additional_contributions
+        rebalanced = year_values.get("rebalanced", pd.Series(False, index=year_values.index))
+        turnover_rate = year_values.get("turnover_rate", pd.Series(0.0, index=year_values.index))
+
+        annual_rows.append(
+            {
+                "year": float(year),
+                "start_value": start_value,
+                "end_value": end_value,
+                "total_return": total_return,
+                "annual_return": float(annual_return),
+                "max_drawdown": float(year_drawdown.min()),
+                "volatility": volatility,
+                "sharpe": sharpe,
+                "total_contributions": total_contributions,
+                "net_profit": float(net_profit),
+                "return_on_contributions": float(net_profit / capital_base) if capital_base else 0.0,
+                "total_fees": float(year_values.get("fees", pd.Series(0.0, index=year_values.index)).sum()),
+                "rebalance_count": float(rebalanced.sum()),
+                "average_turnover": (
+                    float(turnover_rate.loc[rebalanced.astype(bool)].mean())
+                    if bool(rebalanced.astype(bool).any())
+                    else 0.0
+                ),
+                "elapsed_days": float(elapsed_days),
+            }
+        )
+
+    return annual_rows
 
 
 def _cash_flow_adjusted_returns(

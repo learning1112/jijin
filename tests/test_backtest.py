@@ -129,6 +129,17 @@ class BacktestTests(unittest.TestCase):
         self.assertAlmostEqual(result.metrics["total_contributions"], 2000.0)
         self.assertAlmostEqual(result.metrics["return_on_contributions"], 0.5)
 
+    def test_annual_metrics_are_split_by_calendar_year(self) -> None:
+        dates = pd.to_datetime(["2023-12-29", "2024-01-02", "2024-01-03"])
+        frame = pd.DataFrame({"value": [1.0, 1.1, 1.21]}, index=dates)
+        series = FundSeries(code="000001", data_type="net_worth", frame=frame)
+
+        result = run_backtest_from_series({"000001": series}, {"000001": 1.0})
+
+        self.assertEqual([row["year"] for row in result.annual_metrics], [2023.0, 2024.0])
+        self.assertAlmostEqual(result.annual_metrics[1]["total_return"], 0.1)
+        self.assertAlmostEqual(result.annual_metrics[1]["end_value"], 12100.0)
+
 
 class ReportTests(unittest.TestCase):
     def test_render_html_report(self) -> None:
@@ -142,6 +153,7 @@ class ReportTests(unittest.TestCase):
         html = render_html_report(result, {"000001": 1.0})
 
         self.assertIn("Fund Backtest Report", html)
+        self.assertIn("Annual Metrics", html)
         self.assertIn("Portfolio Value", html)
         self.assertIn("000001", html)
 
@@ -160,6 +172,25 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(payload["period"]["start"], "2024-01-01")
         self.assertEqual(payload["final_holdings"][0]["code"], "000001")
         self.assertEqual(len(payload["series"]), 2)
+        self.assertEqual(payload["annual_metrics"][0]["year"], 2024.0)
+
+    def test_serialize_regular_contribution_metrics(self) -> None:
+        frame = pd.DataFrame(
+            {"value": [1.0, 1.0]},
+            index=pd.to_datetime(["2024-01-01", "2024-02-01"]),
+        )
+        series = FundSeries(code="000001", data_type="net_worth", frame=frame)
+
+        result = run_backtest_from_series(
+            {"000001": series},
+            {"000001": 1.0},
+            initial_cash=0.0,
+            contribution_amount=1000.0,
+            contribution_frequency="monthly",
+        )
+        payload = serialize_backtest_result(result, {"000001": 1.0})
+
+        self.assertAlmostEqual(payload["metrics"]["total_contributions"], 2000.0)
 
 
 if __name__ == "__main__":
