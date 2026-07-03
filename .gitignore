@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*$py.class
+
+.venv/
+venv/
+env/
+.env
+.env.*
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+data/fund_cache/
+output/
+*.log
