@@ -14,6 +14,14 @@ from urllib.parse import parse_qs, urlparse
 import pandas as pd
 
 from .backtest import BacktestResult, normalize_weights, run_backtest
+from .screening import (
+    DEFAULT_COVERAGE_PATH,
+    DEFAULT_MAX_STALE_DAYS,
+    filter_coverage,
+    load_coverage_index,
+    load_fund_catalog as load_screening_fund_catalog,
+    validate_fund_history_requirement,
+)
 
 
 APP_HTML = r"""<!doctype html>
@@ -329,6 +337,11 @@ APP_HTML = r"""<!doctype html>
           <label><span>初始资金</span><input id="initialCash" type="number" min="1" step="100" value="10000"></label>
           <label><span>起始日期</span><input id="startDate" type="date" value="2021-01-01"></label>
           <label><span>结束日期</span><input id="endDate" type="date"></label>
+          <label><span>历史数据年限</span><select id="minHistoryYears">
+            <option value="0" selected>不限</option>
+            <option value="5">≥5年</option>
+            <option value="10">≥10年</option>
+          </select></label>
           <label><span>再平衡</span><select id="rebalanceFrequency">
             <option value="none">不再平衡</option>
             <option value="monthly">每月</option>
@@ -435,9 +448,15 @@ APP_HTML = r"""<!doctype html>
 
     async function fetchFundSuggestions(query) {
       if (!query || query.length < 2) return;
-      const response = await fetch(`/api/funds?q=${encodeURIComponent(query)}`);
+      const params = new URLSearchParams({ q: query });
+      if ($("minHistoryYears").value !== "0") {
+        params.set("min_history_years", $("minHistoryYears").value);
+        params.set("as_of", $("endDate").value || new Date().toISOString().slice(0, 10));
+      }
+      const response = await fetch(`/api/funds?${params.toString()}`);
       if (!response.ok) return;
       const payload = await response.json();
+      if (payload.warning) setStatus(payload.warning, "error");
       const list = $("fundSuggestions");
       list.innerHTML = "";
       payload.items.forEach((item) => {
@@ -462,6 +481,7 @@ APP_HTML = r"""<!doctype html>
         cache_dir: $("cacheDir").value || "data/fund_cache",
         rebalance_frequency: $("rebalanceFrequency").value,
         fee_rate: Number($("feeRate").value || 0),
+        min_history_years: Number($("minHistoryYears").value || 0),
         contribution_amount: Number($("contributionAmount").value || 0),
         contribution_frequency: $("contributionFrequency").value,
         contribution_weekday: $("contributionWeekday").value,
@@ -685,8 +705,15 @@ class BacktestRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/funds":
             params = parse_qs(parsed.query)
             query = params.get("q", [""])[0]
-            items = search_funds(query, limit=20)
-            self._send_json({"items": items})
+            min_history_years = _float_or_default(params.get("min_history_years", [0])[0], 0.0)
+            as_of = _blank_to_none(params.get("as_of", [""])[0])
+            payload = search_funds_payload(
+                query,
+                limit=20,
+                min_history_years=min_history_years,
+                as_of=as_of,
+            )
+            self._send_json(payload)
             return
         self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -739,12 +766,22 @@ class BacktestRequestHandler(BaseHTTPRequestHandler):
 def run_backtest_payload(payload: dict[str, Any]) -> dict[str, Any]:
     weights = _weights_from_payload(payload)
     initial_cash = _float_or_default(payload.get("initial_cash"), 10000.0)
+    min_history_years = _float_or_default(payload.get("min_history_years"), 0.0)
+    end = _blank_to_none(payload.get("end"))
+
+    validate_fund_history_requirement(
+        weights,
+        min_history_years=min_history_years,
+        as_of=end,
+        coverage_path=DEFAULT_COVERAGE_PATH,
+        max_stale_days=DEFAULT_MAX_STALE_DAYS,
+    )
 
     result = run_backtest(
         weights,
         initial_cash=initial_cash,
         start=_blank_to_none(payload.get("start")),
-        end=_blank_to_none(payload.get("end")),
+        end=end,
         cache_dir=str(payload.get("cache_dir") or "data/fund_cache"),
         rebalance_frequency=str(payload.get("rebalance_frequency") or "none"),  # type: ignore[arg-type]
         fee_rate=float(payload.get("fee_rate") or 0.0),
@@ -802,10 +839,31 @@ def serialize_backtest_result(
     }
 
 
-def search_funds(query: str, *, limit: int = 20) -> list[dict[str, str]]:
+def search_funds(
+    query: str,
+    *,
+    limit: int = 20,
+    min_history_years: float = 0.0,
+    as_of: str | None = None,
+) -> list[dict[str, str]]:
+    return search_funds_payload(
+        query,
+        limit=limit,
+        min_history_years=min_history_years,
+        as_of=as_of,
+    )["items"]
+
+
+def search_funds_payload(
+    query: str,
+    *,
+    limit: int = 20,
+    min_history_years: float = 0.0,
+    as_of: str | None = None,
+) -> dict[str, Any]:
     catalog = load_fund_catalog()
     if catalog.empty:
-        return []
+        return {"items": []}
     q = str(query).strip().lower()
     if q:
         mask = (
@@ -815,32 +873,27 @@ def search_funds(query: str, *, limit: int = 20) -> list[dict[str, str]]:
             | catalog["pinyin"].str.lower().str.contains(q, na=False)
         )
         catalog = catalog.loc[mask]
-    return catalog.head(limit).to_dict(orient="records")
+    warning = ""
+    if min_history_years > 0:
+        coverage_path = Path(DEFAULT_COVERAGE_PATH)
+        if coverage_path.exists():
+            coverage = filter_coverage(
+                load_coverage_index(coverage_path),
+                min_history_years=min_history_years,
+                as_of=as_of,
+                max_stale_days=DEFAULT_MAX_STALE_DAYS,
+            )
+            catalog = catalog.loc[catalog["code"].isin(set(coverage["code"]))]
+        else:
+            warning = "请先运行 screen-funds 生成历史覆盖索引，当前显示未筛选结果"
+    payload: dict[str, Any] = {"items": catalog.head(limit).to_dict(orient="records")}
+    if warning:
+        payload["warning"] = warning
+    return payload
 
 
 def load_fund_catalog() -> pd.DataFrame:
-    candidates = [Path("data/fund_codes.csv"), Path("基金列表.csv")]
-    for path in candidates:
-        if not path.exists():
-            continue
-        frame = pd.read_csv(path, dtype=str).fillna("")
-        if "基金代码" in frame.columns:
-            frame = frame.rename(
-                columns={
-                    "基金代码": "code",
-                    "基金简称": "name",
-                    "基金类型": "fund_type",
-                    "基金拼音": "pinyin",
-                }
-            )
-        if "code" not in frame.columns:
-            continue
-        for column in ["name", "fund_type", "pinyin"]:
-            if column not in frame.columns:
-                frame[column] = ""
-        frame["code"] = frame["code"].astype(str).str.zfill(6)
-        return frame[["code", "name", "fund_type", "pinyin"]]
-    return pd.DataFrame(columns=["code", "name", "fund_type", "pinyin"])
+    return load_screening_fund_catalog()
 
 
 def run_server(host: str = "127.0.0.1", port: int = 8000, *, open_browser: bool = False) -> None:
