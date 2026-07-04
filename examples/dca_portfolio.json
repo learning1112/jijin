@@ -1,7 +1,8 @@
 {
   "initial_cash": 0,
   "contribution_amount": 1000,
-  "contribution_frequency": "monthly",
+  "contribution_frequency": "weekly",
+  "contribution_weekday": "wednesday",
   "start": "2021-01-01",
   "rebalance_frequency": "none",
   "fee_rate": 0.001,

@@ -12,6 +12,8 @@ It keeps the original exploration scripts intact and adds:
 - Local visual web UI
 - Rebalancing frequency and trade fee assumptions
 - Regular contribution / dollar-cost averaging mode
+- Daily regular contribution on every available trading day
+- Weekly regular contribution weekday selection from Monday to Friday
 - Annual metrics table in the visual UI and HTML reports
 
 For non-money-market funds, the Eastmoney parser prefers `Data_ACWorthTrend`,
@@ -52,7 +54,8 @@ python -m fund_backtest.cli backtest `
   --rebalance-frequency monthly `
   --fee-rate 0.001 `
   --contribution-amount 1000 `
-  --contribution-frequency monthly `
+  --contribution-frequency weekly `
+  --contribution-weekday wednesday `
   --output output/backtest_values.csv
 ```
 
@@ -67,8 +70,9 @@ python -m fund_backtest.cli backtest --portfolio examples/portfolio.json
 ```
 
 The config file can define `initial_cash`, `start`, `end`, `rebalance_frequency`,
-`fee_rate`, `contribution_amount`, `contribution_frequency`, `output`, `report`,
-`cache_dir`, and a `funds` object mapping fund codes to weights.
+`fee_rate`, `contribution_amount`, `contribution_frequency`,
+`contribution_weekday`, `output`, `report`, `cache_dir`, and a `funds` object
+mapping fund codes to weights.
 
 ## Run a regular-contribution backtest
 
@@ -76,8 +80,12 @@ The config file can define `initial_cash`, `start`, `end`, `rebalance_frequency`
 python -m fund_backtest.cli backtest --portfolio examples/dca_portfolio.json
 ```
 
-The regular contribution is invested on the first available trading day in each
-selected period, including the first backtest date.
+Monthly, quarterly, and yearly regular contributions are invested on the first
+available trading day in each selected period, including the first backtest date.
+Daily regular contributions are invested on every available trading day.
+Weekly regular contributions can choose `monday` through `friday`; if that day
+has no fund data, the contribution is invested on the next available trading day
+in the same week.
 
 ## Refresh source data
 

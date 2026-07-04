@@ -45,8 +45,14 @@ def build_parser() -> argparse.ArgumentParser:
     backtest.add_argument("--contribution-amount", type=float, default=0.0)
     backtest.add_argument(
         "--contribution-frequency",
-        choices=["none", "weekly", "monthly", "quarterly", "yearly"],
+        choices=["none", "daily", "weekly", "monthly", "quarterly", "yearly"],
         default="monthly",
+    )
+    backtest.add_argument(
+        "--contribution-weekday",
+        choices=["monday", "tuesday", "wednesday", "thursday", "friday"],
+        default="monday",
+        help="Weekday for weekly regular contributions.",
     )
     backtest.add_argument("--output", default="output/backtest_values.csv")
     backtest.add_argument("--report", default="output/backtest_report.html")
@@ -73,6 +79,7 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
     fee_rate = float(config.get("fee_rate", args.fee_rate))
     contribution_amount = float(config.get("contribution_amount", args.contribution_amount))
     contribution_frequency = str(config.get("contribution_frequency", args.contribution_frequency))
+    contribution_weekday = str(config.get("contribution_weekday", args.contribution_weekday))
     output = str(config.get("output", args.output))
     report = str(config.get("report", args.report)) if args.report else None
 
@@ -86,6 +93,7 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
         fee_rate=fee_rate,
         contribution_amount=contribution_amount,
         contribution_frequency=contribution_frequency,  # type: ignore[arg-type]
+        contribution_weekday=contribution_weekday,  # type: ignore[arg-type]
         refresh=args.refresh,
     )
 

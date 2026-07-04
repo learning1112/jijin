@@ -339,10 +339,18 @@ APP_HTML = r"""<!doctype html>
           <label><span>定投金额</span><input id="contributionAmount" type="number" min="0" step="100" value="0"></label>
           <label><span>定投频率</span><select id="contributionFrequency">
             <option value="none">不定投</option>
+            <option value="daily">每个交易日</option>
             <option value="weekly">每周</option>
             <option value="monthly" selected>每月</option>
             <option value="quarterly">每季度</option>
             <option value="yearly">每年</option>
+          </select></label>
+          <label id="contributionWeekdayLabel"><span>定投星期</span><select id="contributionWeekday">
+            <option value="monday" selected>周一</option>
+            <option value="tuesday">周二</option>
+            <option value="wednesday">周三</option>
+            <option value="thursday">周四</option>
+            <option value="friday">周五</option>
           </select></label>
           <label><span>缓存目录</span><input id="cacheDir" value="data/fund_cache"></label>
         </div>
@@ -456,8 +464,15 @@ APP_HTML = r"""<!doctype html>
         fee_rate: Number($("feeRate").value || 0),
         contribution_amount: Number($("contributionAmount").value || 0),
         contribution_frequency: $("contributionFrequency").value,
+        contribution_weekday: $("contributionWeekday").value,
         refresh: $("refresh").checked
       };
+    }
+
+    function updateContributionWeekdayState() {
+      const weekly = $("contributionFrequency").value === "weekly";
+      $("contributionWeekdayLabel").hidden = !weekly;
+      $("contributionWeekday").disabled = !weekly;
     }
 
     async function runBacktest() {
@@ -646,11 +661,13 @@ APP_HTML = r"""<!doctype html>
 
     $("addFund").addEventListener("click", () => addFundRow());
     $("runBacktest").addEventListener("click", runBacktest);
+    $("contributionFrequency").addEventListener("change", updateContributionWeekdayState);
     window.addEventListener("resize", () => state.result && renderAll(state.result));
     defaultFunds.forEach(([code, weight]) => addFundRow(code, weight));
     renderMetrics({});
     renderAnnualMetrics([]);
     $("holdings").innerHTML = `<div class="empty">暂无持仓</div>`;
+    updateContributionWeekdayState();
   </script>
 </body>
 </html>
@@ -733,6 +750,7 @@ def run_backtest_payload(payload: dict[str, Any]) -> dict[str, Any]:
         fee_rate=float(payload.get("fee_rate") or 0.0),
         contribution_amount=float(payload.get("contribution_amount") or 0.0),
         contribution_frequency=str(payload.get("contribution_frequency") or "monthly"),  # type: ignore[arg-type]
+        contribution_weekday=str(payload.get("contribution_weekday") or "monday"),  # type: ignore[arg-type]
         refresh=bool(payload.get("refresh", False)),
     )
     return serialize_backtest_result(result, weights)

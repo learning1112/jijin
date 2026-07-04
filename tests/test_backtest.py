@@ -7,7 +7,7 @@ import pandas as pd
 from fund_backtest.backtest import run_backtest_from_series
 from fund_backtest.eastmoney import FundSeries, parse_pingzhongdata
 from fund_backtest.report import render_html_report
-from fund_backtest.webapp import serialize_backtest_result
+from fund_backtest.webapp import APP_HTML, serialize_backtest_result
 
 
 class ParsePingzhongdataTests(unittest.TestCase):
@@ -129,6 +129,59 @@ class BacktestTests(unittest.TestCase):
         self.assertAlmostEqual(result.metrics["total_contributions"], 2000.0)
         self.assertAlmostEqual(result.metrics["return_on_contributions"], 0.5)
 
+    def test_daily_contribution_runs_on_every_available_trading_day(self) -> None:
+        dates = pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-04"])
+        frame = pd.DataFrame({"value": [1.0, 1.0, 1.0]}, index=dates)
+        series = FundSeries(code="000001", data_type="net_worth", frame=frame)
+
+        result = run_backtest_from_series(
+            {"000001": series},
+            {"000001": 1.0},
+            initial_cash=0.0,
+            contribution_amount=100.0,
+            contribution_frequency="daily",
+        )
+
+        self.assertEqual(list(result.values["contribution"]), [100.0, 100.0, 100.0])
+        self.assertAlmostEqual(result.metrics["total_contributions"], 300.0)
+
+    def test_weekly_contribution_uses_selected_weekday(self) -> None:
+        dates = pd.to_datetime(
+            ["2024-01-01", "2024-01-02", "2024-01-03", "2024-01-08", "2024-01-10"]
+        )
+        frame = pd.DataFrame({"value": [1.0, 1.0, 1.0, 1.0, 1.0]}, index=dates)
+        series = FundSeries(code="000001", data_type="net_worth", frame=frame)
+
+        result = run_backtest_from_series(
+            {"000001": series},
+            {"000001": 1.0},
+            initial_cash=0.0,
+            contribution_amount=100.0,
+            contribution_frequency="weekly",
+            contribution_weekday="wednesday",
+        )
+
+        self.assertEqual(list(result.values["contribution"]), [0.0, 0.0, 100.0, 0.0, 100.0])
+        self.assertEqual(result.metadata["contribution_weekday"], "wednesday")
+        self.assertAlmostEqual(result.metrics["total_contributions"], 200.0)
+
+    def test_weekly_contribution_rolls_to_next_available_day_in_same_week(self) -> None:
+        dates = pd.to_datetime(["2024-01-01", "2024-01-04", "2024-01-05"])
+        frame = pd.DataFrame({"value": [1.0, 1.0, 1.0]}, index=dates)
+        series = FundSeries(code="000001", data_type="net_worth", frame=frame)
+
+        result = run_backtest_from_series(
+            {"000001": series},
+            {"000001": 1.0},
+            initial_cash=0.0,
+            contribution_amount=100.0,
+            contribution_frequency="weekly",
+            contribution_weekday="wednesday",
+        )
+
+        self.assertEqual(list(result.values["contribution"]), [0.0, 100.0, 0.0])
+        self.assertAlmostEqual(result.metrics["total_contributions"], 100.0)
+
     def test_annual_metrics_are_split_by_calendar_year(self) -> None:
         dates = pd.to_datetime(["2023-12-29", "2024-01-02", "2024-01-03"])
         frame = pd.DataFrame({"value": [1.0, 1.1, 1.21]}, index=dates)
@@ -159,6 +212,11 @@ class ReportTests(unittest.TestCase):
 
 
 class WebAppTests(unittest.TestCase):
+    def test_web_ui_contains_daily_and_weekly_contribution_controls(self) -> None:
+        self.assertIn("每个交易日", APP_HTML)
+        self.assertIn("contributionWeekday", APP_HTML)
+        self.assertIn("定投星期", APP_HTML)
+
     def test_serialize_backtest_result(self) -> None:
         frame = pd.DataFrame(
             {"value": [1.0, 1.1]},

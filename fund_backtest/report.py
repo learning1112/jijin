@@ -320,6 +320,7 @@ def _render_settings(result: BacktestResult) -> str:
     fee_rate = float(result.metadata.get("fee_rate", 0.0))
     contribution_amount = float(result.metadata.get("contribution_amount", 0.0))
     contribution_frequency = str(result.metadata.get("contribution_frequency", "none"))
+    contribution_weekday = str(result.metadata.get("contribution_weekday", "monday"))
     return f"""<section>
       <h2>Settings</h2>
       <table>
@@ -328,6 +329,7 @@ def _render_settings(result: BacktestResult) -> str:
           <tr><td>Trade fee rate</td><td>{fee_rate:.3%}</td></tr>
           <tr><td>Regular contribution</td><td>{contribution_amount:,.2f}</td></tr>
           <tr><td>Contribution frequency</td><td>{escape(contribution_frequency)}</td></tr>
+          <tr><td>Contribution weekday</td><td>{escape(contribution_weekday)}</td></tr>
         </tbody>
       </table>
     </section>"""

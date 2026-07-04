@@ -11,7 +11,16 @@ from .eastmoney import EastmoneyFundClient, FundSeries, HistoryType
 
 
 RebalanceFrequency = Literal["none", "monthly", "quarterly", "yearly"]
-ContributionFrequency = Literal["none", "weekly", "monthly", "quarterly", "yearly"]
+ContributionFrequency = Literal["none", "daily", "weekly", "monthly", "quarterly", "yearly"]
+ContributionWeekday = Literal["monday", "tuesday", "wednesday", "thursday", "friday"]
+
+CONTRIBUTION_WEEKDAYS = {
+    "monday": 0,
+    "tuesday": 1,
+    "wednesday": 2,
+    "thursday": 3,
+    "friday": 4,
+}
 
 
 @dataclass(frozen=True)
@@ -34,6 +43,7 @@ def run_backtest(
     fee_rate: float = 0.0,
     contribution_amount: float = 0.0,
     contribution_frequency: ContributionFrequency = "monthly",
+    contribution_weekday: ContributionWeekday = "monday",
     client: EastmoneyFundClient | None = None,
 ) -> BacktestResult:
     client = client or EastmoneyFundClient()
@@ -53,6 +63,7 @@ def run_backtest(
         fee_rate=fee_rate,
         contribution_amount=contribution_amount,
         contribution_frequency=contribution_frequency,
+        contribution_weekday=contribution_weekday,
     )
 
 
@@ -67,6 +78,7 @@ def run_backtest_from_series(
     fee_rate: float = 0.0,
     contribution_amount: float = 0.0,
     contribution_frequency: ContributionFrequency = "monthly",
+    contribution_weekday: ContributionWeekday = "monday",
 ) -> BacktestResult:
     normalized = normalize_weights(weights)
     if initial_cash < 0:
@@ -82,6 +94,7 @@ def run_backtest_from_series(
         raise ValueError("Initial cash or active regular contributions must be positive.")
     _validate_rebalance_frequency(rebalance_frequency)
     _validate_contribution_frequency(contribution_frequency)
+    _validate_contribution_weekday(contribution_weekday)
 
     relative_curves: dict[str, pd.Series] = {}
 
@@ -102,6 +115,7 @@ def run_backtest_from_series(
         fee_rate=fee_rate,
         contribution_amount=contribution_amount,
         contribution_frequency=contribution_frequency,
+        contribution_weekday=contribution_weekday,
     )
     aligned["drawdown"] = aligned["total"] / aligned["total"].cummax() - 1.0
     metrics = calculate_metrics(aligned["total"], aligned["drawdown"], aligned["contribution"])
@@ -126,6 +140,7 @@ def run_backtest_from_series(
         "fee_rate": fee_rate,
         "contribution_amount": contribution_amount,
         "contribution_frequency": contribution_frequency,
+        "contribution_weekday": contribution_weekday,
     }
     return BacktestResult(
         values=aligned,
@@ -156,11 +171,12 @@ def calculate_metrics(
     end_value = float(total.iloc[-1])
     elapsed_days = max((total.index[-1] - total.index[0]).days, 0)
     returns = _cash_flow_adjusted_returns(total, contribution)
-    total_return = (
-        float((1.0 + returns).prod() - 1.0)
-        if not returns.empty
-        else end_value / start_value - 1.0
-    )
+    if not returns.empty:
+        total_return = float((1.0 + returns).prod() - 1.0)
+    elif start_value > 0:
+        total_return = end_value / start_value - 1.0
+    else:
+        total_return = 0.0
     annual_return = (
         (1.0 + total_return) ** (365.0 / elapsed_days) - 1.0
         if elapsed_days > 0 and total_return > -1.0
@@ -302,6 +318,7 @@ def _simulate_portfolio(
     fee_rate: float,
     contribution_amount: float,
     contribution_frequency: ContributionFrequency,
+    contribution_weekday: ContributionWeekday,
 ) -> pd.DataFrame:
     index = _combined_index(relative_curves)
     relative = pd.DataFrame(index=index)
@@ -333,7 +350,13 @@ def _simulate_portfolio(
 
         if previous_date is None and initial_cash > 0:
             contribution += initial_cash
-        if _is_contribution_date(previous_date, date, contribution_frequency, contribution_amount):
+        if _is_contribution_date(
+            previous_date,
+            date,
+            contribution_frequency,
+            contribution_amount,
+            contribution_weekday,
+        ):
             contribution += contribution_amount
         if contribution > 0:
             contribution_fee = contribution * fee_rate
@@ -402,15 +425,18 @@ def _is_contribution_date(
     current_date: pd.Timestamp,
     frequency: ContributionFrequency,
     amount: float,
+    contribution_weekday: ContributionWeekday = "monday",
 ) -> bool:
     if amount <= 0 or frequency == "none":
         return False
     if previous_date is None:
+        if frequency == "weekly":
+            return _is_weekly_contribution_date(None, current_date, contribution_weekday)
+        return True
+    if frequency == "daily":
         return True
     if frequency == "weekly":
-        previous_week = previous_date.isocalendar()
-        current_week = current_date.isocalendar()
-        return (previous_week.year, previous_week.week) != (current_week.year, current_week.week)
+        return _is_weekly_contribution_date(previous_date, current_date, contribution_weekday)
     if frequency == "monthly":
         return (previous_date.year, previous_date.month) != (current_date.year, current_date.month)
     if frequency == "quarterly":
@@ -422,14 +448,39 @@ def _is_contribution_date(
     raise ValueError(f"Unsupported contribution frequency: {frequency}")
 
 
+def _is_weekly_contribution_date(
+    previous_date: pd.Timestamp | None,
+    current_date: pd.Timestamp,
+    contribution_weekday: ContributionWeekday,
+) -> bool:
+    target_weekday = CONTRIBUTION_WEEKDAYS[contribution_weekday]
+    current_weekday = current_date.weekday()
+    if previous_date is None:
+        return current_weekday >= target_weekday
+
+    previous_week = previous_date.isocalendar()
+    current_week = current_date.isocalendar()
+    same_week = (previous_week.year, previous_week.week) == (current_week.year, current_week.week)
+    if same_week:
+        return previous_date.weekday() < target_weekday <= current_weekday
+    return current_weekday >= target_weekday
+
+
 def _validate_rebalance_frequency(frequency: str) -> None:
     if frequency not in {"none", "monthly", "quarterly", "yearly"}:
         raise ValueError("Rebalance frequency must be one of: none, monthly, quarterly, yearly.")
 
 
 def _validate_contribution_frequency(frequency: str) -> None:
-    if frequency not in {"none", "weekly", "monthly", "quarterly", "yearly"}:
-        raise ValueError("Contribution frequency must be one of: none, weekly, monthly, quarterly, yearly.")
+    if frequency not in {"none", "daily", "weekly", "monthly", "quarterly", "yearly"}:
+        raise ValueError(
+            "Contribution frequency must be one of: none, daily, weekly, monthly, quarterly, yearly."
+        )
+
+
+def _validate_contribution_weekday(weekday: str) -> None:
+    if weekday not in CONTRIBUTION_WEEKDAYS:
+        raise ValueError("Contribution weekday must be one of: monday, tuesday, wednesday, thursday, friday.")
 
 
 def _has_active_contribution(amount: float, frequency: str) -> bool:
