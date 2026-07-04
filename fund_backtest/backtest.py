@@ -117,7 +117,7 @@ def run_backtest_from_series(
         contribution_frequency=contribution_frequency,
         contribution_weekday=contribution_weekday,
     )
-    aligned["drawdown"] = aligned["total"] / aligned["total"].cummax() - 1.0
+    aligned["drawdown"] = calculate_drawdown(aligned["total"])
     metrics = calculate_metrics(aligned["total"], aligned["drawdown"], aligned["contribution"])
     metrics["total_fees"] = float(aligned["fees"].sum()) if "fees" in aligned else 0.0
     metrics["rebalance_count"] = float(aligned["rebalanced"].sum()) if "rebalanced" in aligned else 0.0
@@ -231,7 +231,7 @@ def calculate_annual_metrics(values: pd.DataFrame) -> list[dict[str, float]]:
             if elapsed_days > 0 and total_return > -1.0
             else total_return
         )
-        year_drawdown = year_total / year_total.cummax() - 1.0
+        year_drawdown = calculate_drawdown(year_total)
         volatility = float(year_returns.std() * sqrt(252)) if len(year_returns) > 1 else 0.0
         sharpe = (
             float((year_returns.mean() / year_returns.std()) * sqrt(252))
@@ -285,6 +285,12 @@ def _cash_flow_adjusted_returns(
     previous_total = total.shift(1)
     returns = (total - aligned_contribution) / previous_total - 1.0
     return returns.replace([float("inf"), float("-inf")], pd.NA).dropna()
+
+
+def calculate_drawdown(total: pd.Series) -> pd.Series:
+    running_max = total.cummax()
+    drawdown = total / running_max.where(running_max != 0) - 1.0
+    return drawdown.replace([float("inf"), float("-inf")], pd.NA).fillna(0.0).astype(float)
 
 
 def _slice_values(values: pd.Series, start: str | None, end: str | None) -> pd.Series:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 
 import pandas as pd
@@ -165,6 +166,24 @@ class BacktestTests(unittest.TestCase):
         self.assertEqual(result.metadata["contribution_weekday"], "wednesday")
         self.assertAlmostEqual(result.metrics["total_contributions"], 200.0)
 
+    def test_weekly_contribution_before_selected_weekday_has_finite_drawdown(self) -> None:
+        dates = pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-03"])
+        frame = pd.DataFrame({"value": [1.0, 1.0, 1.0]}, index=dates)
+        series = FundSeries(code="000001", data_type="net_worth", frame=frame)
+
+        result = run_backtest_from_series(
+            {"000001": series},
+            {"000001": 1.0},
+            initial_cash=0.0,
+            contribution_amount=100.0,
+            contribution_frequency="weekly",
+            contribution_weekday="wednesday",
+        )
+
+        self.assertEqual(list(result.values["contribution"]), [0.0, 0.0, 100.0])
+        self.assertFalse(result.values["drawdown"].isna().any())
+        self.assertEqual(list(result.values["drawdown"]), [0.0, 0.0, 0.0])
+
     def test_weekly_contribution_rolls_to_next_available_day_in_same_week(self) -> None:
         dates = pd.to_datetime(["2024-01-01", "2024-01-04", "2024-01-05"])
         frame = pd.DataFrame({"value": [1.0, 1.0, 1.0]}, index=dates)
@@ -249,6 +268,23 @@ class WebAppTests(unittest.TestCase):
         payload = serialize_backtest_result(result, {"000001": 1.0})
 
         self.assertAlmostEqual(payload["metrics"]["total_contributions"], 2000.0)
+
+    def test_serialize_weekly_contribution_result_is_strict_json(self) -> None:
+        dates = pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-03"])
+        frame = pd.DataFrame({"value": [1.0, 1.0, 1.0]}, index=dates)
+        series = FundSeries(code="000001", data_type="net_worth", frame=frame)
+        result = run_backtest_from_series(
+            {"000001": series},
+            {"000001": 1.0},
+            initial_cash=0.0,
+            contribution_amount=100.0,
+            contribution_frequency="weekly",
+            contribution_weekday="wednesday",
+        )
+
+        payload = serialize_backtest_result(result, {"000001": 1.0})
+
+        json.dumps(payload, allow_nan=False)
 
 
 if __name__ == "__main__":

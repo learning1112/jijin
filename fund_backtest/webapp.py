@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import mimetypes
 import threading
 import webbrowser
@@ -744,7 +745,7 @@ class BacktestRequestHandler(BaseHTTPRequestHandler):
 
     def _send_json(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
         self._send_bytes(
-            json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            json.dumps(_json_safe(payload), ensure_ascii=False, allow_nan=False).encode("utf-8"),
             "application/json; charset=utf-8",
             status=status,
         )
@@ -960,6 +961,29 @@ def _downsample_frame(frame: pd.DataFrame, *, max_points: int) -> pd.DataFrame:
     if sampled.index[-1] != frame.index[-1]:
         sampled = pd.concat([sampled, frame.iloc[[-1]]])
     return sampled
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, bool) or value is None or isinstance(value, str):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, pd.Timestamp):
+        return value.strftime("%Y-%m-%d")
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return value
 
 
 if __name__ == "__main__":
