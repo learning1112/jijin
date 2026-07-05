@@ -158,6 +158,10 @@ class ScreeningWebTests(unittest.TestCase):
     def test_web_ui_contains_history_filter_control(self) -> None:
         self.assertIn("历史数据年限", APP_HTML)
         self.assertIn("minHistoryYears", APP_HTML)
+        self.assertIn("fund-meta", APP_HTML)
+        self.assertIn("开始：", APP_HTML)
+        self.assertIn("resetValueChart", APP_HTML)
+        self.assertIn("setupChartZoom", APP_HTML)
 
     def test_search_funds_filters_by_coverage_index(self) -> None:
         catalog = pd.DataFrame(
@@ -191,6 +195,7 @@ class ScreeningWebTests(unittest.TestCase):
                 )
 
         self.assertEqual([item["code"] for item in payload["items"]], ["000001"])
+        self.assertEqual(payload["items"][0]["data_start"], "2019-01-01")
 
 
 if __name__ == "__main__":

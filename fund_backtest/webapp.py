@@ -183,7 +183,17 @@ APP_HTML = r"""<!doctype html>
       grid-template-columns: minmax(0, 1fr) 86px 36px;
       gap: 8px;
       margin-bottom: 8px;
-      align-items: end;
+      align-items: start;
+    }
+    .fund-meta {
+      grid-column: 1 / -1;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+      min-height: 34px;
+      padding: 0 2px;
+      overflow-wrap: anywhere;
+      white-space: normal;
     }
     .fund-head {
       display: grid;
@@ -242,9 +252,26 @@ APP_HTML = r"""<!doctype html>
       display: flex;
       align-items: center;
       justify-content: space-between;
+      gap: 10px;
       margin-bottom: 8px;
       color: var(--muted);
       font-size: 13px;
+    }
+    .chart-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+    .chart-actions span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .chart-reset {
+      min-height: 28px;
+      padding: 0 10px;
+      font-size: 12px;
     }
     canvas {
       display: block;
@@ -253,6 +280,8 @@ APP_HTML = r"""<!doctype html>
       border: 1px solid var(--line);
       border-radius: 8px;
       background: #fff;
+      cursor: crosshair;
+      user-select: none;
     }
     table {
       width: 100%;
@@ -318,6 +347,10 @@ APP_HTML = r"""<!doctype html>
       }
       .fund-row, .fund-head {
         grid-template-columns: minmax(0, 1fr) 74px 36px;
+      }
+      .chart-title {
+        align-items: flex-start;
+        display: grid;
       }
     }
   </style>
@@ -387,11 +420,23 @@ APP_HTML = r"""<!doctype html>
         </section>
         <div class="charts">
           <section class="panel chart-box">
-            <div class="chart-title"><strong>资金曲线</strong><span id="valueScale"></span></div>
+            <div class="chart-title">
+              <strong>资金曲线</strong>
+              <div class="chart-actions">
+                <span id="valueScale"></span>
+                <button class="chart-reset" id="resetValueChart" type="button">重置</button>
+              </div>
+            </div>
             <canvas id="valueChart" width="900" height="260"></canvas>
           </section>
           <section class="panel chart-box">
-            <div class="chart-title"><strong>回撤</strong><span id="drawdownScale"></span></div>
+            <div class="chart-title">
+              <strong>回撤</strong>
+              <div class="chart-actions">
+                <span id="drawdownScale"></span>
+                <button class="chart-reset" id="resetDrawdownChart" type="button">重置</button>
+              </div>
+            </div>
             <canvas id="drawdownChart" width="520" height="260"></canvas>
           </section>
         </div>
@@ -413,7 +458,11 @@ APP_HTML = r"""<!doctype html>
       ["513110", 0.25]
     ];
 
-    const state = { result: null };
+    const state = {
+      result: null,
+      chartWindows: {},
+      drag: null
+    };
     const $ = (id) => document.getElementById(id);
 
     function setStatus(message, kind = "") {
@@ -429,14 +478,19 @@ APP_HTML = r"""<!doctype html>
         <input class="fund-code" list="fundSuggestions" inputmode="numeric" maxlength="6" value="${code}">
         <input class="fund-weight" type="number" min="0" step="0.01" value="${weight}">
         <button class="icon remove-fund" type="button" title="删除基金">×</button>
+        <div class="fund-meta">名称：加载中 · 开始：加载中</div>
       `;
       row.querySelector(".remove-fund").addEventListener("click", () => {
         row.remove();
         if (!document.querySelector(".fund-row")) addFundRow();
       });
       const codeInput = row.querySelector(".fund-code");
-      codeInput.addEventListener("input", debounce(() => fetchFundSuggestions(codeInput.value), 220));
+      codeInput.addEventListener("input", debounce(() => {
+        fetchFundSuggestions(codeInput.value);
+        fetchFundDetail(codeInput.value, row);
+      }, 220));
       $("fundRows").appendChild(row);
+      fetchFundDetail(code, row);
     }
 
     function debounce(fn, delay) {
@@ -463,9 +517,41 @@ APP_HTML = r"""<!doctype html>
       payload.items.forEach((item) => {
         const option = document.createElement("option");
         option.value = item.code;
-        option.label = `${item.code} ${item.name} ${item.fund_type}`;
+        option.label = `${item.code} ${item.name} ${item.fund_type} ${item.data_start ? "开始:" + item.data_start : ""}`;
         list.appendChild(option);
       });
+    }
+
+    async function fetchFundDetail(code, row) {
+      const raw = String(code || "").trim();
+      const meta = row.querySelector(".fund-meta");
+      if (!raw) {
+        meta.textContent = "名称：暂无 · 开始：暂无";
+        return;
+      }
+      const normalized = raw.padStart(6, "0");
+      if (normalized.length !== 6 || !/^\d{6}$/.test(normalized)) {
+        meta.textContent = "名称：暂无 · 开始：暂无";
+        return;
+      }
+      try {
+        const params = new URLSearchParams({ q: normalized });
+        const response = await fetch(`/api/funds?${params.toString()}`);
+        if (!response.ok) throw new Error("查询失败");
+        const payload = await response.json();
+        const item = (payload.items || []).find((entry) => entry.code === normalized) || payload.items?.[0];
+        if (!item) {
+          meta.textContent = "名称：未找到 · 开始：暂无";
+          return;
+        }
+        const name = item.name || "未命名基金";
+        const start = item.data_start || "暂无";
+        const type = item.fund_type ? ` · ${item.fund_type}` : "";
+        meta.textContent = `${name}${type} · 开始：${start}`;
+        meta.title = `${item.code} ${name} ${item.fund_type || ""} 开始：${start}`;
+      } catch (error) {
+        meta.textContent = "名称：查询失败 · 开始：暂无";
+      }
     }
 
     function readPayload() {
@@ -626,7 +712,12 @@ APP_HTML = r"""<!doctype html>
       ctx.clearRect(0, 0, width, height);
 
       if (!rows.length) return;
+      const fullRows = rows;
+      const windowRange = normalizeChartWindow(canvasId, fullRows.length);
+      rows = fullRows.slice(windowRange.start, windowRange.end + 1);
+      if (!rows.length) return;
       const values = rows.map((row) => row[1]).filter((value) => Number.isFinite(value));
+      if (!values.length) return;
       let min = Math.min(...values);
       let max = Math.max(...values);
       if (min === max) { min -= 1; max += 1; }
@@ -634,6 +725,11 @@ APP_HTML = r"""<!doctype html>
       const pad = { left: 58, right: 16, top: 16, bottom: 34 };
       const cw = width - pad.left - pad.right;
       const ch = height - pad.top - pad.bottom;
+      canvas.dataset.padLeft = String(pad.left);
+      canvas.dataset.padRight = String(pad.right);
+      canvas.dataset.visibleStart = String(windowRange.start);
+      canvas.dataset.visibleEnd = String(windowRange.end);
+      canvas.dataset.rowCount = String(fullRows.length);
       ctx.strokeStyle = "#d8dee6";
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -661,7 +757,82 @@ APP_HTML = r"""<!doctype html>
         else ctx.lineTo(x, y);
       });
       ctx.stroke();
+      if (state.drag && state.drag.canvasId === canvasId) {
+        const x1 = Math.min(state.drag.startX, state.drag.currentX);
+        const x2 = Math.max(state.drag.startX, state.drag.currentX);
+        if (x2 - x1 > 3) {
+          ctx.fillStyle = "rgba(36, 125, 143, 0.12)";
+          ctx.fillRect(x1, pad.top, x2 - x1, ch);
+          ctx.strokeStyle = "rgba(36, 125, 143, 0.75)";
+          ctx.strokeRect(x1, pad.top, x2 - x1, ch);
+        }
+      }
       $(scaleId).textContent = `${formatAxis(min, suffix)} / ${formatAxis(max, suffix)}`;
+      if (windowRange.start > 0 || windowRange.end < fullRows.length - 1) {
+        $(scaleId).textContent += ` · ${fullRows[windowRange.start][0]} 至 ${fullRows[windowRange.end][0]}`;
+      }
+    }
+
+    function normalizeChartWindow(canvasId, rowCount) {
+      const current = state.chartWindows[canvasId];
+      if (!current || rowCount <= 0) return { start: 0, end: Math.max(rowCount - 1, 0) };
+      const start = Math.max(0, Math.min(current.start, rowCount - 1));
+      const end = Math.max(start, Math.min(current.end, rowCount - 1));
+      return { start, end };
+    }
+
+    function resetChart(canvasId) {
+      delete state.chartWindows[canvasId];
+      if (state.result) renderAll(state.result);
+    }
+
+    function setupChartZoom(canvasId) {
+      const canvas = $(canvasId);
+      canvas.addEventListener("pointerdown", (event) => {
+        if (!state.result) return;
+        const rect = canvas.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        state.drag = { canvasId, startX: x, currentX: x };
+        canvas.setPointerCapture(event.pointerId);
+      });
+      canvas.addEventListener("pointermove", (event) => {
+        if (!state.drag || state.drag.canvasId !== canvasId) return;
+        const rect = canvas.getBoundingClientRect();
+        state.drag.currentX = Math.max(0, Math.min(event.clientX - rect.left, rect.width));
+        if (state.result) renderAll(state.result);
+      });
+      canvas.addEventListener("pointerup", (event) => {
+        if (!state.drag || state.drag.canvasId !== canvasId) return;
+        const drag = state.drag;
+        state.drag = null;
+        canvas.releasePointerCapture(event.pointerId);
+        const rect = canvas.getBoundingClientRect();
+        const width = rect.width;
+        const left = Number(canvas.dataset.padLeft || 58);
+        const right = width - Number(canvas.dataset.padRight || 16);
+        const x1 = Math.max(left, Math.min(drag.startX, drag.currentX));
+        const x2 = Math.min(right, Math.max(drag.startX, drag.currentX));
+        if (x2 - x1 < 12) {
+          if (state.result) renderAll(state.result);
+          return;
+        }
+        const visibleStart = Number(canvas.dataset.visibleStart || 0);
+        const visibleEnd = Number(canvas.dataset.visibleEnd || 0);
+        const visibleCount = Math.max(visibleEnd - visibleStart, 1);
+        const startRatio = (x1 - left) / Math.max(right - left, 1);
+        const endRatio = (x2 - left) / Math.max(right - left, 1);
+        const nextStart = visibleStart + Math.floor(startRatio * visibleCount);
+        const nextEnd = visibleStart + Math.ceil(endRatio * visibleCount);
+        if (nextEnd > nextStart) {
+          state.chartWindows[canvasId] = { start: nextStart, end: nextEnd };
+        }
+        if (state.result) renderAll(state.result);
+      });
+      canvas.addEventListener("pointercancel", () => {
+        state.drag = null;
+        if (state.result) renderAll(state.result);
+      });
+      canvas.addEventListener("dblclick", () => resetChart(canvasId));
     }
 
     function formatMoney(value) {
@@ -682,8 +853,12 @@ APP_HTML = r"""<!doctype html>
 
     $("addFund").addEventListener("click", () => addFundRow());
     $("runBacktest").addEventListener("click", runBacktest);
+    $("resetValueChart").addEventListener("click", () => resetChart("valueChart"));
+    $("resetDrawdownChart").addEventListener("click", () => resetChart("drawdownChart"));
     $("contributionFrequency").addEventListener("change", updateContributionWeekdayState);
     window.addEventListener("resize", () => state.result && renderAll(state.result));
+    setupChartZoom("valueChart");
+    setupChartZoom("drawdownChart");
     defaultFunds.forEach(([code, weight]) => addFundRow(code, weight));
     renderMetrics({});
     renderAnnualMetrics([]);
@@ -875,6 +1050,7 @@ def search_funds_payload(
         )
         catalog = catalog.loc[mask]
     warning = ""
+    catalog = _attach_coverage_fields(catalog)
     if min_history_years > 0:
         coverage_path = Path(DEFAULT_COVERAGE_PATH)
         if coverage_path.exists():
@@ -895,6 +1071,19 @@ def search_funds_payload(
 
 def load_fund_catalog() -> pd.DataFrame:
     return load_screening_fund_catalog()
+
+
+def _attach_coverage_fields(catalog: pd.DataFrame) -> pd.DataFrame:
+    output = catalog.copy()
+    for column in ["data_start", "data_end", "history_years"]:
+        if column not in output.columns:
+            output[column] = ""
+    coverage_path = Path(DEFAULT_COVERAGE_PATH)
+    if not coverage_path.exists() or output.empty:
+        return output
+    coverage = load_coverage_index(coverage_path)[["code", "data_start", "data_end", "history_years"]]
+    output = output.drop(columns=["data_start", "data_end", "history_years"], errors="ignore")
+    return output.merge(coverage, on="code", how="left").fillna("")
 
 
 def run_server(host: str = "127.0.0.1", port: int = 8000, *, open_browser: bool = False) -> None:
