@@ -25,7 +25,9 @@ class CsvFundCache:
 
     def save(self, series: FundSeries) -> Path:
         path = self.path_for(series.code)
-        frame = series.frame.reset_index()
+        frame = series.frame.copy()
+        frame.index.name = "date"
+        frame = frame.reset_index()
         frame["data_type"] = series.data_type
         frame.to_csv(path, index=False, encoding="utf-8")
         return path

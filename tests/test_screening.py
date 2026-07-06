@@ -7,11 +7,12 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from fund_backtest.cli import main as cli_main
+from fund_backtest.data_management import build_coverage_index
 from fund_backtest.eastmoney import FundSeries
 from fund_backtest.screening import (
     coverage_row_from_series,
     coverage_row_meets_requirement,
+    filter_coverage,
     load_coverage_index,
     save_coverage_index,
     validate_fund_history_requirement,
@@ -98,14 +99,13 @@ class ScreeningTests(unittest.TestCase):
                 )
 
 
-class ScreeningCliTests(unittest.TestCase):
-    def test_screen_funds_generates_coverage_and_filtered_output(self) -> None:
+class DataManagementTests(unittest.TestCase):
+    def test_build_coverage_index_generates_resumable_coverage(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             catalog_path = root / "catalog.csv"
             cache_dir = root / "cache"
             coverage_path = root / "coverage.csv"
-            output_path = root / "universe.csv"
             catalog_path.write_text(
                 "code,name,fund_type,pinyin\n"
                 "000001,Long Fund,混合,LONG\n"
@@ -126,32 +126,24 @@ class ScreeningCliTests(unittest.TestCase):
                 }
             )
 
-            with patch("fund_backtest.cli.EastmoneyFundClient", return_value=fake):
-                exit_code = cli_main(
-                    [
-                        "screen-funds",
-                        "--catalog",
-                        str(catalog_path),
-                        "--cache-dir",
-                        str(cache_dir),
-                        "--coverage",
-                        str(coverage_path),
-                        "--output",
-                        str(output_path),
-                        "--as-of",
-                        "2024-01-01",
-                        "--min-history-years",
-                        "5",
-                    ]
-                )
+            progress = []
+            result = build_coverage_index(
+                catalog_paths=[catalog_path],
+                cache_dir=cache_dir,
+                coverage_path=coverage_path,
+                client=fake,  # type: ignore[arg-type]
+                as_of="2024-01-01",
+                progress_callback=progress.append,
+            )
 
-            self.assertEqual(exit_code, 0)
+            self.assertEqual(result["count"], 3)
             coverage = load_coverage_index(coverage_path)
-            output = pd.read_csv(output_path, dtype=str)
+            filtered = filter_coverage(coverage, min_history_years=5, as_of="2024-01-01")
             self.assertEqual(set(coverage["code"]), {"000001", "000002", "000003"})
-            self.assertEqual(list(output["code"]), ["000001"])
+            self.assertEqual(list(filtered["code"]), ["000001"])
             bad_error = coverage.loc[coverage["code"] == "000003", "error"].iloc[0]
             self.assertIn("boom", bad_error)
+            self.assertEqual(progress[-1]["current"], 3)
 
 
 class ScreeningWebTests(unittest.TestCase):
@@ -162,6 +154,14 @@ class ScreeningWebTests(unittest.TestCase):
         self.assertIn("开始：", APP_HTML)
         self.assertIn("resetValueChart", APP_HTML)
         self.assertIn("setupChartZoom", APP_HTML)
+        self.assertIn("drawXAxisTicks", APP_HTML)
+        self.assertIn("数据管理", APP_HTML)
+        self.assertIn("生成覆盖索引", APP_HTML)
+        self.assertIn("相关性分析", APP_HTML)
+        self.assertIn("corrPrevPage", APP_HTML)
+        self.assertIn("corrPageSize", APP_HTML)
+        self.assertIn("B Sharpe", APP_HTML)
+        self.assertNotIn("screen-funds", APP_HTML)
 
     def test_search_funds_filters_by_coverage_index(self) -> None:
         catalog = pd.DataFrame(

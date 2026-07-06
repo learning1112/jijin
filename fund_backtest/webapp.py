@@ -3,8 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import mimetypes
 import threading
+import uuid
 import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -15,6 +15,8 @@ from urllib.parse import parse_qs, urlparse
 import pandas as pd
 
 from .backtest import BacktestResult, normalize_weights, run_backtest
+from .correlation import compute_correlation_index, load_correlation_payload
+from .data_management import build_coverage_index, get_data_status, refresh_fund_catalog
 from .screening import (
     DEFAULT_COVERAGE_PATH,
     DEFAULT_MAX_STALE_DAYS,
@@ -209,6 +211,83 @@ APP_HTML = r"""<!doctype html>
       margin-top: 14px;
     }
     .actions .primary { flex: 1; }
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .section-head h2 {
+      margin: 0;
+    }
+    .inline-status {
+      color: var(--muted);
+      font-size: 13px;
+      text-align: right;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .tool-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(130px, 1fr));
+      gap: 10px;
+      align-items: end;
+      margin-bottom: 12px;
+    }
+    .tool-grid button {
+      padding: 0 12px;
+      font-weight: 600;
+    }
+    .job-status {
+      min-height: 32px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px 10px;
+      color: var(--muted);
+      font-size: 13px;
+      background: #fff;
+      overflow-wrap: anywhere;
+    }
+    .pager {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      gap: 8px;
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .pager button {
+      min-height: 30px;
+      padding: 0 10px;
+      font-size: 12px;
+    }
+    .pager button:disabled {
+      cursor: default;
+      opacity: 0.45;
+    }
+    .table-scroll {
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+    .table-scroll table th,
+    .table-scroll table td {
+      font-size: 12px;
+    }
+    .correlation-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.1fr) minmax(360px, 1.4fr);
+      gap: 16px;
+      align-items: start;
+    }
+    .heatmap {
+      height: 360px;
+      cursor: default;
+    }
     .checkline {
       display: flex;
       align-items: center;
@@ -321,6 +400,9 @@ APP_HTML = r"""<!doctype html>
       .workspace, .charts {
         grid-template-columns: 1fr;
       }
+      .tool-grid, .correlation-layout {
+        grid-template-columns: 1fr;
+      }
       aside {
         position: static;
       }
@@ -411,6 +493,19 @@ APP_HTML = r"""<!doctype html>
       </aside>
       <main>
         <section class="panel">
+          <div class="section-head">
+            <h2>数据管理</h2>
+            <span id="dataStatus" class="inline-status">读取中</span>
+          </div>
+          <div class="tool-grid">
+            <button id="refreshCatalog" type="button">更新基金列表</button>
+            <label><span>覆盖截至日期</span><input id="coverageAsOf" type="date"></label>
+            <label class="checkline"><input id="coverageRefresh" type="checkbox"><span>重抓历史数据</span></label>
+            <button class="primary" id="buildCoverage" type="button">生成覆盖索引</button>
+          </div>
+          <div id="dataJobStatus" class="job-status">就绪</div>
+        </section>
+        <section class="panel">
           <h2>指标</h2>
           <div id="metrics" class="metrics"></div>
         </section>
@@ -441,6 +536,62 @@ APP_HTML = r"""<!doctype html>
           </section>
         </div>
         <section class="panel">
+          <div class="section-head">
+            <h2>相关性分析</h2>
+            <span id="correlationSummary" class="inline-status">暂无数据</span>
+          </div>
+          <div class="tool-grid">
+            <label><span>最小年限</span><select id="corrMinHistoryYears">
+              <option value="5" selected>≥5年</option>
+              <option value="10">≥10年</option>
+            </select></label>
+            <label><span>截至日期</span><input id="corrAsOf" type="date"></label>
+            <label><span>搜索</span><input id="corrQuery" placeholder="代码或名称"></label>
+            <label><span>排序</span><select id="corrSort">
+              <option value="abs_desc" selected>相关强度（强→弱）</option>
+              <option value="abs_asc">弱相关优先</option>
+              <option value="corr_desc">正相关（高→低）</option>
+              <option value="corr_asc">负相关（低→高）</option>
+              <option value="sharpe_b_desc">Sharpe高</option>
+            </select></label>
+            <label><span>相关性区间</span><select id="corrRange">
+              <option value="all" selected>全部</option>
+              <option value="strong_neg">强负相关 (&lt; -0.7)</option>
+              <option value="mid_neg">中负相关 (-0.7 ~ -0.3)</option>
+              <option value="weak">低相关 (-0.3 ~ 0.3)</option>
+              <option value="mid_pos">中正相关 (0.3 ~ 0.7)</option>
+              <option value="strong_pos">强正相关 (&gt; 0.7)</option>
+            </select></label>
+            <label><span>Sharpe 区间</span><select id="sharpeRange">
+              <option value="all" selected>全部</option>
+              <option value="lt0">&lt; 0</option>
+              <option value="0_1">0 ~ 1</option>
+              <option value="1_2">1 ~ 2</option>
+              <option value="2_3">2 ~ 3</option>
+              <option value="gt3">≥ 3</option>
+            </select></label>
+            <label><span>每页</span><select id="corrPageSize">
+              <option value="10" selected>10</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+              <option value="200">200</option>
+              <option value="500">500</option>
+            </select></label>
+            <button class="primary" id="computeCorrelation" type="button">计算相关性</button>
+            <button id="refreshCorrelation" type="button">刷新结果</button>
+          </div>
+          <div id="correlationJobStatus" class="job-status">就绪</div>
+          <div class="correlation-layout">
+            <canvas class="heatmap" id="correlationHeatmap" width="520" height="360"></canvas>
+            <div id="correlationTable" class="table-scroll"></div>
+          </div>
+          <div class="pager">
+            <button id="corrPrevPage" type="button">上一页</button>
+            <span id="corrPageInfo">第 1 / 1 页</span>
+            <button id="corrNextPage" type="button">下一页</button>
+          </div>
+        </section>
+        <section class="panel">
           <h2>持仓</h2>
           <div id="holdings"></div>
         </section>
@@ -461,7 +612,11 @@ APP_HTML = r"""<!doctype html>
     const state = {
       result: null,
       chartWindows: {},
-      drag: null
+      drag: null,
+      jobTimers: {},
+      correlationRows: [],
+      correlationPage: 1,
+      correlationSummary: {}
     };
     const $ = (id) => document.getElementById(id);
 
@@ -469,6 +624,312 @@ APP_HTML = r"""<!doctype html>
       const el = $("status");
       el.className = "status " + kind;
       el.textContent = message;
+    }
+
+    function todayText() {
+      return new Date().toISOString().slice(0, 10);
+    }
+
+    async function postJson(url, payload = {}) {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "请求失败");
+      return data;
+    }
+
+    async function refreshDataStatus() {
+      try {
+        const response = await fetch("/api/data-status");
+        if (!response.ok) throw new Error("读取数据状态失败");
+        renderDataStatus(await response.json());
+      } catch (error) {
+        $("dataStatus").textContent = error.message;
+      }
+    }
+
+    function renderDataStatus(data) {
+      const catalog = data.fund_catalog || {};
+      const coverage = data.coverage || {};
+      const correlations = data.correlations || {};
+      $("dataStatus").textContent = `基金 ${catalog.count || 0} · 覆盖 ${coverage.count || 0} · 相关 ${correlations.pair_count || 0}`;
+    }
+
+    async function startFundCatalogJob() {
+      $("refreshCatalog").disabled = true;
+      $("dataJobStatus").textContent = "基金列表更新中";
+      try {
+        const job = await postJson("/api/data/fund-catalog");
+        pollJob(job.id, "dataJobStatus", () => {
+          $("refreshCatalog").disabled = false;
+          refreshDataStatus();
+          fetchFundSuggestions(document.querySelector(".fund-code")?.value || "");
+        });
+      } catch (error) {
+        $("refreshCatalog").disabled = false;
+        $("dataJobStatus").textContent = error.message;
+      }
+    }
+
+    async function startCoverageJob() {
+      $("buildCoverage").disabled = true;
+      $("dataJobStatus").textContent = "覆盖索引生成中";
+      try {
+        const job = await postJson("/api/data/coverage", {
+          as_of: $("coverageAsOf").value || todayText(),
+          refresh: $("coverageRefresh").checked
+        });
+        pollJob(job.id, "dataJobStatus", () => {
+          $("buildCoverage").disabled = false;
+          refreshDataStatus();
+          document.querySelectorAll(".fund-row").forEach((row) => {
+            fetchFundDetail(row.querySelector(".fund-code").value, row);
+          });
+        });
+      } catch (error) {
+        $("buildCoverage").disabled = false;
+        $("dataJobStatus").textContent = error.message;
+      }
+    }
+
+    function renderJobStatus(elementId, job) {
+      const current = Number(job.current || 0);
+      const total = Number(job.total || 0);
+      const progress = total > 0 ? ` ${current}/${total}` : "";
+      const errors = Number(job.errors || 0) > 0 ? ` · 错误 ${job.errors}` : "";
+      const message = job.message || job.status || "";
+      $(elementId).textContent = `${message}${progress}${errors}`;
+      $(elementId).className = "job-status " + (job.status === "failed" ? "error" : job.status === "completed" ? "ok" : "");
+    }
+
+    async function pollJob(jobId, elementId, onDone) {
+      clearTimeout(state.jobTimers[jobId]);
+      try {
+        const response = await fetch(`/api/jobs/${jobId}`);
+        const job = await response.json();
+        if (!response.ok) throw new Error(job.error || "任务不存在");
+        renderJobStatus(elementId, job);
+        if (job.status === "completed" || job.status === "failed") {
+          delete state.jobTimers[jobId];
+          onDone?.(job);
+          return;
+        }
+        state.jobTimers[jobId] = setTimeout(() => pollJob(jobId, elementId, onDone), 900);
+      } catch (error) {
+        $(elementId).textContent = error.message;
+        delete state.jobTimers[jobId];
+        onDone?.({ status: "failed", error: error.message });
+      }
+    }
+
+    async function startCorrelationJob() {
+      $("computeCorrelation").disabled = true;
+      $("correlationJobStatus").textContent = "相关性计算中";
+      try {
+        const job = await postJson("/api/correlations", {
+          min_history_years: Number($("corrMinHistoryYears").value || 5),
+          as_of: $("corrAsOf").value || todayText(),
+          query: $("corrQuery").value || ""
+        });
+        pollJob(job.id, "correlationJobStatus", (finalJob) => {
+          $("computeCorrelation").disabled = false;
+          refreshDataStatus();
+          if (finalJob.status === "completed") loadCorrelations();
+        });
+      } catch (error) {
+        $("computeCorrelation").disabled = false;
+        $("correlationJobStatus").textContent = error.message;
+      }
+    }
+
+    const CORR_RANGE_MAP = {
+      all: {},
+      strong_neg: { min: -1.0001, max: -0.7 },
+      mid_neg: { min: -0.7, max: -0.3 },
+      weak: { min: -0.3, max: 0.3 },
+      mid_pos: { min: 0.3, max: 0.7 },
+      strong_pos: { min: 0.7, max: 1.0001 }
+    };
+    const SHARPE_RANGE_MAP = {
+      all: {},
+      lt0: { max: 0 },
+      "0_1": { min: 0, max: 1 },
+      "1_2": { min: 1, max: 2 },
+      "2_3": { min: 2, max: 3 },
+      gt3: { min: 3 }
+    };
+
+    async function loadCorrelations(page = state.correlationPage) {
+      state.correlationPage = Math.max(Number(page) || 1, 1);
+      const corrRange = CORR_RANGE_MAP[$("corrRange").value] || {};
+      const sharpeRange = SHARPE_RANGE_MAP[$("sharpeRange").value] || {};
+      const params = new URLSearchParams({
+        q: $("corrQuery").value || "",
+        sort: $("corrSort").value,
+        page: String(state.correlationPage),
+        page_size: $("corrPageSize").value || "10"
+      });
+      if (corrRange.min !== undefined) params.set("corr_min", String(corrRange.min));
+      if (corrRange.max !== undefined) params.set("corr_max", String(corrRange.max));
+      if (sharpeRange.min !== undefined) params.set("sharpe_min", String(sharpeRange.min));
+      if (sharpeRange.max !== undefined) params.set("sharpe_max", String(sharpeRange.max));
+      try {
+        const response = await fetch(`/api/correlations?${params.toString()}`);
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "读取相关性失败");
+        state.correlationRows = payload.items || [];
+        state.correlationSummary = payload.summary || {};
+        state.correlationPage = Number(state.correlationSummary.page || state.correlationPage);
+        renderCorrelationSummary(state.correlationSummary);
+        renderCorrelationTable(state.correlationRows);
+        drawCorrelationHeatmap(state.correlationRows);
+        renderCorrelationPager(state.correlationSummary);
+        if (payload.warning) $("correlationJobStatus").textContent = payload.warning;
+      } catch (error) {
+        $("correlationJobStatus").textContent = error.message;
+      }
+    }
+
+    function resetCorrelationPageAndLoad() {
+      state.correlationPage = 1;
+      loadCorrelations(1);
+    }
+
+    function changeCorrelationPage(delta) {
+      const summary = state.correlationSummary || {};
+      const totalPages = Number(summary.total_pages || 1);
+      const nextPage = Math.max(1, Math.min(totalPages, state.correlationPage + delta));
+      if (nextPage !== state.correlationPage) loadCorrelations(nextPage);
+    }
+
+    function renderCorrelationSummary(summary) {
+      const fundCount = Number(summary.fund_count || 0);
+      const pairCount = Number(summary.pair_count || 0);
+      const filtered = Number(summary.filtered_count || 0);
+      const page = Number(summary.page || 1);
+      const totalPages = Number(summary.total_pages || 1);
+      const generated = summary.generated_at ? ` · ${summary.generated_at}` : "";
+      $("correlationSummary").textContent = `基金 ${fundCount} · 组合 ${pairCount} · 当前 ${filtered} · 第 ${page}/${totalPages} 页${generated}`;
+    }
+
+    function renderCorrelationPager(summary) {
+      const page = Number(summary.page || 1);
+      const totalPages = Number(summary.total_pages || 1);
+      const filtered = Number(summary.filtered_count || 0);
+      $("corrPageInfo").textContent = `第 ${page} / ${totalPages} 页 · 共 ${filtered} 条`;
+      $("corrPrevPage").disabled = page <= 1;
+      $("corrNextPage").disabled = page >= totalPages;
+    }
+
+    function renderCorrelationTable(rows) {
+      if (!rows.length) {
+        $("correlationTable").innerHTML = `<div class="empty">暂无相关性数据</div>`;
+        return;
+      }
+      $("correlationTable").innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>基金A</th>
+              <th>基金B</th>
+              <th>相关系数</th>
+              <th>A Sharpe</th>
+              <th>B Sharpe</th>
+              <th>样本数</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map((row) => `
+              <tr>
+                <td>${escapeHtml(row.code_a)}<br>${escapeHtml(row.name_a || "")}</td>
+                <td>${escapeHtml(row.code_b)}<br>${escapeHtml(row.name_b || "")}</td>
+                <td>${formatCorrelation(row.correlation)}</td>
+                <td>${formatSharpe(row.sharpe_a)}</td>
+                <td>${formatSharpe(row.sharpe_b)}</td>
+                <td>${Number(row.observations || 0).toFixed(0)}</td>
+              </tr>`).join("")}
+          </tbody>
+        </table>
+      `;
+    }
+
+    function drawCorrelationHeatmap(rows) {
+      const canvas = $("correlationHeatmap");
+      const ctx = canvas.getContext("2d");
+      const dpr = window.devicePixelRatio || 1;
+      const rect = canvas.getBoundingClientRect();
+      canvas.width = Math.max(1, Math.floor(rect.width * dpr));
+      canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+      ctx.scale(dpr, dpr);
+      const width = rect.width;
+      const height = rect.height;
+      ctx.clearRect(0, 0, width, height);
+      const codes = [];
+      rows.forEach((row) => {
+        [row.code_a, row.code_b].forEach((code) => {
+          if (code && !codes.includes(code) && codes.length < 16) codes.push(code);
+        });
+      });
+      if (!codes.length) {
+        ctx.fillStyle = "#66717f";
+        ctx.font = "14px Arial";
+        ctx.fillText("暂无相关性数据", 18, 32);
+        return;
+      }
+      const label = 58;
+      const gap = 2;
+      const size = Math.floor(Math.min((width - label - 12) / codes.length, (height - label - 12) / codes.length));
+      const map = new Map();
+      rows.forEach((row) => {
+        const value = Number(row.correlation);
+        if (!Number.isFinite(value)) return;
+        map.set(`${row.code_a}|${row.code_b}`, value);
+        map.set(`${row.code_b}|${row.code_a}`, value);
+      });
+      ctx.font = "11px Arial";
+      ctx.textAlign = "right";
+      ctx.textBaseline = "middle";
+      codes.forEach((code, index) => {
+        const pos = label + index * size + size / 2;
+        ctx.fillStyle = "#66717f";
+        ctx.fillText(code, label - 8, pos);
+        ctx.save();
+        ctx.translate(pos, label - 8);
+        ctx.rotate(-Math.PI / 4);
+        ctx.textAlign = "left";
+        ctx.fillText(code, 0, 0);
+        ctx.restore();
+      });
+      codes.forEach((rowCode, rowIndex) => {
+        codes.forEach((colCode, colIndex) => {
+          const value = rowCode === colCode ? 1 : map.get(`${rowCode}|${colCode}`);
+          const x = label + colIndex * size;
+          const y = label + rowIndex * size;
+          ctx.fillStyle = correlationColor(value);
+          ctx.fillRect(x, y, Math.max(size - gap, 1), Math.max(size - gap, 1));
+        });
+      });
+    }
+
+    function correlationColor(value) {
+      if (!Number.isFinite(value)) return "#f1f4f7";
+      const intensity = Math.min(Math.abs(value), 1);
+      if (value >= 0) {
+        return `rgba(36, 125, 143, ${0.16 + intensity * 0.76})`;
+      }
+      return `rgba(189, 63, 69, ${0.16 + intensity * 0.76})`;
+    }
+
+    function formatCorrelation(value) {
+      const number = Number(value);
+      return Number.isFinite(number) ? number.toFixed(4) : "暂无";
+    }
+    function formatSharpe(value) {
+      const number = Number(value);
+      return Number.isFinite(number) ? number.toFixed(3) : "暂无";
     }
 
     function addFundRow(code = "", weight = "") {
@@ -742,10 +1203,7 @@ APP_HTML = r"""<!doctype html>
       ctx.font = "12px Arial";
       ctx.fillText(formatAxis(max, suffix), 8, pad.top + 5);
       ctx.fillText(formatAxis(min, suffix), 8, pad.top + ch);
-      ctx.fillText(rows[0][0], pad.left, height - 10);
-      const lastLabel = rows[rows.length - 1][0];
-      const labelWidth = ctx.measureText(lastLabel).width;
-      ctx.fillText(lastLabel, width - pad.right - labelWidth, height - 10);
+      drawXAxisTicks(ctx, rows, pad, width, height);
 
       ctx.strokeStyle = color;
       ctx.lineWidth = 2.3;
@@ -771,6 +1229,57 @@ APP_HTML = r"""<!doctype html>
       if (windowRange.start > 0 || windowRange.end < fullRows.length - 1) {
         $(scaleId).textContent += ` · ${fullRows[windowRange.start][0]} 至 ${fullRows[windowRange.end][0]}`;
       }
+    }
+
+    function drawXAxisTicks(ctx, rows, pad, width, height) {
+      const chartWidth = width - pad.left - pad.right;
+      const chartHeight = height - pad.top - pad.bottom;
+      const axisY = pad.top + chartHeight;
+      const maxTicks = width >= 760 ? 6 : width >= 520 ? 5 : 3;
+      const indexes = buildTickIndexes(rows.length, maxTicks);
+      ctx.font = "12px Arial";
+      ctx.textBaseline = "top";
+
+      indexes.forEach((index) => {
+        const x = pad.left + (index / Math.max(rows.length - 1, 1)) * chartWidth;
+        ctx.strokeStyle = "#edf1f5";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(x, pad.top);
+        ctx.lineTo(x, axisY);
+        ctx.stroke();
+
+        ctx.strokeStyle = "#cfd7e2";
+        ctx.beginPath();
+        ctx.moveTo(x, axisY);
+        ctx.lineTo(x, axisY + 5);
+        ctx.stroke();
+
+        ctx.fillStyle = "#66717f";
+        ctx.textAlign = index === 0 ? "left" : index === rows.length - 1 ? "right" : "center";
+        ctx.fillText(formatDateTick(rows[index][0], rows[0][0], rows[rows.length - 1][0]), x, axisY + 9);
+      });
+      ctx.textAlign = "left";
+      ctx.textBaseline = "alphabetic";
+    }
+
+    function buildTickIndexes(length, maxTicks) {
+      if (length <= 1) return [0];
+      const count = Math.min(maxTicks, length);
+      const indexes = [];
+      for (let i = 0; i < count; i += 1) {
+        indexes.push(Math.round((i / Math.max(count - 1, 1)) * (length - 1)));
+      }
+      return [...new Set(indexes)];
+    }
+
+    function formatDateTick(value, first, last) {
+      const firstDate = new Date(`${first}T00:00:00`);
+      const lastDate = new Date(`${last}T00:00:00`);
+      const elapsedDays = (lastDate - firstDate) / 86400000;
+      if (!Number.isFinite(elapsedDays)) return value;
+      if (elapsedDays > 370) return value.slice(0, 7);
+      return value.slice(5);
     }
 
     function normalizeChartWindow(canvasId, rowCount) {
@@ -853,10 +1362,26 @@ APP_HTML = r"""<!doctype html>
 
     $("addFund").addEventListener("click", () => addFundRow());
     $("runBacktest").addEventListener("click", runBacktest);
+    $("refreshCatalog").addEventListener("click", startFundCatalogJob);
+    $("buildCoverage").addEventListener("click", startCoverageJob);
+    $("computeCorrelation").addEventListener("click", startCorrelationJob);
+    $("refreshCorrelation").addEventListener("click", () => loadCorrelations());
+    $("corrQuery").addEventListener("input", debounce(resetCorrelationPageAndLoad, 250));
+    $("corrSort").addEventListener("change", resetCorrelationPageAndLoad);
+    $("corrPageSize").addEventListener("change", resetCorrelationPageAndLoad);
+    $("corrRange").addEventListener("change", resetCorrelationPageAndLoad);
+    $("sharpeRange").addEventListener("change", resetCorrelationPageAndLoad);
+    $("corrPrevPage").addEventListener("click", () => changeCorrelationPage(-1));
+    $("corrNextPage").addEventListener("click", () => changeCorrelationPage(1));
     $("resetValueChart").addEventListener("click", () => resetChart("valueChart"));
     $("resetDrawdownChart").addEventListener("click", () => resetChart("drawdownChart"));
     $("contributionFrequency").addEventListener("change", updateContributionWeekdayState);
-    window.addEventListener("resize", () => state.result && renderAll(state.result));
+    window.addEventListener("resize", () => {
+      if (state.result) renderAll(state.result);
+      drawCorrelationHeatmap(state.correlationRows);
+    });
+    $("coverageAsOf").value = todayText();
+    $("corrAsOf").value = todayText();
     setupChartZoom("valueChart");
     setupChartZoom("drawdownChart");
     defaultFunds.forEach(([code, weight]) => addFundRow(code, weight));
@@ -864,10 +1389,77 @@ APP_HTML = r"""<!doctype html>
     renderAnnualMetrics([]);
     $("holdings").innerHTML = `<div class="empty">暂无持仓</div>`;
     updateContributionWeekdayState();
+    refreshDataStatus();
+    loadCorrelations();
   </script>
 </body>
 </html>
 """
+
+
+_JOBS: dict[str, dict[str, Any]] = {}
+_JOBS_LOCK = threading.Lock()
+
+
+def start_job(kind: str, target) -> dict[str, Any]:
+    job_id = uuid.uuid4().hex
+    now = _timestamp_text()
+    job = {
+        "id": job_id,
+        "kind": kind,
+        "status": "queued",
+        "message": "排队中",
+        "current": 0,
+        "total": 0,
+        "errors": 0,
+        "created_at": now,
+        "started_at": "",
+        "completed_at": "",
+        "result": {},
+        "error": "",
+    }
+    with _JOBS_LOCK:
+        _JOBS[job_id] = job
+
+    def progress(update: dict[str, Any]) -> None:
+        update_job(job_id, **update)
+
+    def runner() -> None:
+        update_job(job_id, status="running", started_at=_timestamp_text(), message="运行中")
+        try:
+            result = target(progress)
+            update_job(
+                job_id,
+                status="completed",
+                completed_at=_timestamp_text(),
+                message="完成",
+                result=result,
+            )
+        except Exception as exc:  # noqa: BLE001
+            update_job(
+                job_id,
+                status="failed",
+                completed_at=_timestamp_text(),
+                message=str(exc),
+                error=str(exc),
+            )
+
+    threading.Thread(target=runner, name=f"fund-backtest-{kind}", daemon=True).start()
+    return get_job(job_id) or job
+
+
+def update_job(job_id: str, **updates: Any) -> None:
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if job is None:
+            return
+        job.update(updates)
+
+
+def get_job(job_id: str) -> dict[str, Any] | None:
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        return dict(job) if job is not None else None
 
 
 class BacktestRequestHandler(BaseHTTPRequestHandler):
@@ -891,17 +1483,83 @@ class BacktestRequestHandler(BaseHTTPRequestHandler):
             )
             self._send_json(payload)
             return
+        if parsed.path == "/api/data-status":
+            self._send_json(get_data_status())
+            return
+        if parsed.path == "/api/correlations":
+            params = parse_qs(parsed.query)
+
+            def _optional_float(name: str) -> float | None:
+                values = params.get(name)
+                if not values or values[0] == "":
+                    return None
+                try:
+                    value = float(values[0])
+                except (TypeError, ValueError):
+                    return None
+                return value if math.isfinite(value) else None
+
+            payload = load_correlation_payload(
+                query=params.get("q", [""])[0],
+                sort=params.get("sort", ["abs_desc"])[0],
+                limit=int(_float_or_default(params.get("limit", [200])[0], 200)),
+                page=int(_float_or_default(params.get("page", [1])[0], 1)),
+                page_size=int(_float_or_default(params.get("page_size", [10])[0], 10)),
+                corr_min=_optional_float("corr_min"),
+                corr_max=_optional_float("corr_max"),
+                sharpe_min=_optional_float("sharpe_min"),
+                sharpe_max=_optional_float("sharpe_max"),
+            )
+            self._send_json(payload)
+            return
+        if parsed.path.startswith("/api/jobs/"):
+            job_id = parsed.path.rsplit("/", 1)[-1]
+            job = get_job(job_id)
+            if job is None:
+                self._send_json({"error": "任务不存在"}, status=HTTPStatus.NOT_FOUND)
+                return
+            self._send_json(job)
+            return
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path != "/api/backtest":
-            self.send_error(HTTPStatus.NOT_FOUND)
-            return
         try:
-            payload = self._read_json()
-            result = run_backtest_payload(payload)
-            self._send_json(result)
+            if parsed.path == "/api/backtest":
+                payload = self._read_json()
+                result = run_backtest_payload(payload)
+                self._send_json(result)
+                return
+            if parsed.path == "/api/data/fund-catalog":
+                job = start_job("fund_catalog", lambda progress: refresh_fund_catalog(progress_callback=progress))
+                self._send_json(job, status=HTTPStatus.ACCEPTED)
+                return
+            if parsed.path == "/api/data/coverage":
+                payload = self._read_json()
+                job = start_job(
+                    "coverage",
+                    lambda progress: build_coverage_index(
+                        as_of=_blank_to_none(payload.get("as_of")),
+                        refresh=bool(payload.get("refresh", False)),
+                        progress_callback=progress,
+                    ),
+                )
+                self._send_json(job, status=HTTPStatus.ACCEPTED)
+                return
+            if parsed.path == "/api/correlations":
+                payload = self._read_json()
+                job = start_job(
+                    "correlations",
+                    lambda progress: compute_correlation_index(
+                        min_history_years=_float_or_default(payload.get("min_history_years"), 5.0),
+                        as_of=_blank_to_none(payload.get("as_of")),
+                        query=str(payload.get("query") or ""),
+                        progress_callback=progress,
+                    ),
+                )
+                self._send_json(job, status=HTTPStatus.ACCEPTED)
+                return
+            self.send_error(HTTPStatus.NOT_FOUND)
         except Exception as exc:  # noqa: BLE001
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
@@ -1062,7 +1720,7 @@ def search_funds_payload(
             )
             catalog = catalog.loc[catalog["code"].isin(set(coverage["code"]))]
         else:
-            warning = "请先运行 screen-funds 生成历史覆盖索引，当前显示未筛选结果"
+            warning = "历史覆盖索引不存在，请在数据管理里生成，当前显示未筛选结果"
     payload: dict[str, Any] = {"items": catalog.head(limit).to_dict(orient="records")}
     if warning:
         payload["warning"] = warning
@@ -1087,8 +1745,9 @@ def _attach_coverage_fields(catalog: pd.DataFrame) -> pd.DataFrame:
 
 
 def run_server(host: str = "127.0.0.1", port: int = 8000, *, open_browser: bool = False) -> None:
-    server = ThreadingHTTPServer((host, port), BacktestRequestHandler)
-    url = f"http://{host}:{port}/"
+    server = _create_server(host, port)
+    actual_port = int(server.server_address[1])
+    url = f"http://{host}:{actual_port}/"
     if open_browser:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()
     print(f"Fund backtest UI running at {url}")
@@ -1098,6 +1757,21 @@ def run_server(host: str = "127.0.0.1", port: int = 8000, *, open_browser: bool 
         print("Shutting down")
     finally:
         server.server_close()
+
+
+def _create_server(host: str, port: int, *, attempts: int = 20) -> ThreadingHTTPServer:
+    for candidate in range(port, port + attempts):
+        try:
+            return ThreadingHTTPServer((host, candidate), BacktestRequestHandler)
+        except OSError as exc:
+            if _is_port_in_use(exc):
+                continue
+            raise
+    raise OSError(f"No available port found from {port} to {port + attempts - 1}.")
+
+
+def _is_port_in_use(exc: OSError) -> bool:
+    return getattr(exc, "winerror", None) == 10048 or getattr(exc, "errno", None) in {48, 98, 10048}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1133,6 +1807,10 @@ def _blank_to_none(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _timestamp_text() -> str:
+    return pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _float_or_default(value: Any, default: float) -> float:

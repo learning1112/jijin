@@ -1,139 +1,32 @@
-# Fund Backtest MVP
+# 基金回测可视化网站
 
-This project now has a small reusable backtesting core under `fund_backtest/`.
-It keeps the original exploration scripts intact and adds:
+这个项目现在以本地网页为主：基金搜索、数据准备、组合回测、定投设置、年度指标和相关性分析都在浏览器里完成。
 
-- Eastmoney/Tiantian Fund public data client
-- CSV cache for fetched fund series
-- Portfolio backtest engine
-- Metrics: total return, annualized return, max drawdown, volatility, Sharpe
-- CLI entry point
-- HTML report with portfolio value, drawdown, weights, and final holdings
-- Local visual web UI
-- Rebalancing frequency and trade fee assumptions
-- Regular contribution / dollar-cost averaging mode
-- Daily regular contribution on every available trading day
-- Weekly regular contribution weekday selection from Monday to Friday
-- Fund universe screening by actual 5-year or 10-year history coverage
-- Annual metrics table in the visual UI and HTML reports
+## 打开网站
 
-For non-money-market funds, the Eastmoney parser prefers `Data_ACWorthTrend`,
-which is the accumulated net-worth trend. If that series is unavailable it falls
-back to `Data_netWorthTrend`. Money-market funds use `Data_millionCopiesIncome`.
+双击项目根目录里的 `启动网站.bat`。
 
-## Start the visual UI
+网站会在本机浏览器打开，默认地址是 `http://127.0.0.1:8000/`；如果端口被占用，会自动使用后面的可用端口。
 
-```powershell
-python -m fund_backtest.cli web --host 127.0.0.1 --port 8000
-```
+## 网页功能
 
-Then open `http://127.0.0.1:8000/`.
+- 数据管理：更新基金列表，生成或刷新历史覆盖索引。
+- 组合回测：输入基金代码和权重，设置起止日期、再平衡、交易费率和定投策略。
+- 历史年限筛选：支持不限、5 年以上、10 年以上。
+- 年度指标：按自然年展示收益、回撤、投入、盈利和费用。
+- 图表查看：资金曲线和回撤图支持拖拽查看局部。
+- 相关性分析：使用已有累计净值缓存，筛选 5 年以上基金，计算两两 Pearson 相关并展示热力图和表格。
 
-## Create the Conda environment
+## 数据口径
 
-```powershell
-conda env create -f environment.yml
-conda activate jijin-backtest
-```
+- 非货币基金优先使用天天基金的累计净值走势。
+- 相关性计算先按日期对齐净值，缺失值使用最近的前值填充。
+- 相关性使用第 t 天净值减去前一天净值之后的变化量计算。
+- 历史年限按实际净值数据覆盖长度判断，不按基金成立日期判断。
 
-If the environment already exists:
+## 本地数据
 
-```powershell
-conda env update -f environment.yml --prune
-conda activate jijin-backtest
-```
-
-## Run a backtest
-
-```powershell
-python -m fund_backtest.cli backtest `
-  --fund 000307=0.25 `
-  --fund 511010=0.25 `
-  --fund 012693=0.25 `
-  --fund 513110=0.25 `
-  --start 2021-01-01 `
-  --rebalance-frequency monthly `
-  --fee-rate 0.001 `
-  --contribution-amount 1000 `
-  --contribution-frequency weekly `
-  --contribution-weekday wednesday `
-  --output output/backtest_values.csv
-```
-
-The command writes portfolio values to `output/backtest_values.csv`.
-It also writes an HTML report to `output/backtest_report.html`.
-Fetched source data is cached in `data/fund_cache/`.
-
-## Run from a portfolio config
-
-```powershell
-python -m fund_backtest.cli backtest --portfolio examples/portfolio.json
-```
-
-The config file can define `initial_cash`, `start`, `end`, `rebalance_frequency`,
-`fee_rate`, `contribution_amount`, `contribution_frequency`,
-`contribution_weekday`, `min_history_years`, `coverage`, `max_stale_days`,
-`output`, `report`, `cache_dir`, and a `funds` object mapping fund codes to
-weights.
-
-## Build a 5-year or 10-year fund universe
-
-The history filter uses each fund's actual fetched net-worth series. It checks
-the first and latest available data dates instead of relying on the fund catalog.
-
-```powershell
-python -m fund_backtest.cli screen-funds `
-  --min-history-years 5 `
-  --as-of 2026-07-04 `
-  --output data/fund_universe_5y.csv
-```
-
-For a 10-year universe:
-
-```powershell
-python -m fund_backtest.cli screen-funds `
-  --min-history-years 10 `
-  --as-of 2026-07-04 `
-  --output data/fund_universe_10y.csv
-```
-
-The command maintains `data/fund_coverage.csv` as a reusable coverage index, so
-interrupted scans can continue without refetching completed rows. By default,
-funds whose latest data is more than 45 days older than the reference date are
-excluded. Use `--refresh` to refetch histories.
-
-The web UI can filter fund search suggestions by 不限, ≥5年, or ≥10年. If the
-coverage index has not been created yet, it will show unfiltered suggestions and
-ask you to run `screen-funds` first. Backtests still validate selected funds when
-a minimum history filter is enabled.
-
-## Run a regular-contribution backtest
-
-```powershell
-python -m fund_backtest.cli backtest --portfolio examples/dca_portfolio.json
-```
-
-Monthly, quarterly, and yearly regular contributions are invested on the first
-available trading day in each selected period, including the first backtest date.
-Daily regular contributions are invested on every available trading day.
-Weekly regular contributions can choose `monday` through `friday`; if that day
-has no fund data, the contribution is invested on the next available trading day
-in the same week.
-
-## Refresh source data
-
-```powershell
-python -m fund_backtest.cli backtest --refresh --fund 000307=1
-```
-
-## Download the fund list
-
-```powershell
-python -m fund_backtest.cli fund-codes --output data/fund_codes.csv
-```
-
-## Run tests
-
-```powershell
-python -m unittest discover -s tests
-```
+- `data/fund_cache/` 保存基金历史净值缓存。
+- `data/fund_coverage.csv` 保存历史覆盖索引。
+- `data/fund_correlations.csv` 保存两两相关性结果。
+- `data/` 是本地运行数据，不上传到 GitHub。

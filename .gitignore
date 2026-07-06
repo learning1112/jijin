@@ -13,5 +13,6 @@ env/
 .ruff_cache/
 
 data/fund_cache/
+data/
 output/
 *.log

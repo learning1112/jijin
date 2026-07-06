@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
@@ -70,6 +70,7 @@ def update_coverage_index(
     max_stale_days: int = DEFAULT_MAX_STALE_DAYS,
     refresh: bool = False,
     limit: int | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> pd.DataFrame:
     as_of_date = normalize_as_of(as_of)
     client = client or EastmoneyFundClient()
@@ -82,7 +83,9 @@ def update_coverage_index(
     }
     catalog_rows = catalog.head(limit) if limit is not None else catalog
 
-    for _, catalog_row in catalog_rows.iterrows():
+    total = len(catalog_rows)
+    errors = 0
+    for position, (_, catalog_row) in enumerate(catalog_rows.iterrows(), start=1):
         info = _catalog_dict(catalog_row)
         current = rows_by_code.get(info["code"])
         if not refresh and current and _has_stored_coverage(current):
@@ -103,6 +106,18 @@ def update_coverage_index(
             )
         rows_by_code[info["code"]] = row
         save_coverage_index(pd.DataFrame(rows_by_code.values()), coverage_path)
+        if row.get("error"):
+            errors += 1
+        if progress_callback:
+            progress_callback(
+                {
+                    "current": position,
+                    "total": total,
+                    "code": info["code"],
+                    "errors": errors,
+                    "message": f"正在检查 {info['code']}",
+                }
+            )
 
     result = pd.DataFrame(rows_by_code.values())
     result = _ensure_coverage_columns(result)
@@ -264,7 +279,7 @@ def validate_fund_history_requirement(
     coverage = load_coverage_index(coverage_path)
     if coverage.empty:
         raise ValueError(
-            "历史覆盖索引不存在，请先运行 screen-funds 生成 data/fund_coverage.csv。"
+            "历史覆盖索引不存在，请在网页的数据管理里生成 data/fund_coverage.csv。"
         )
 
     as_of_date = normalize_as_of(as_of)
