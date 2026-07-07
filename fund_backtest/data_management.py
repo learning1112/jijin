@@ -8,6 +8,11 @@ import pandas as pd
 
 from .correlation import DEFAULT_CORRELATION_PATH, load_correlation_summary
 from .eastmoney import EastmoneyFundClient
+from .purchase_status import (
+    DEFAULT_PURCHASE_STATUS_PATH,
+    load_purchase_status_index,
+    refresh_purchase_status_index,
+)
 from .screening import (
     DEFAULT_COVERAGE_PATH,
     DEFAULT_MAX_STALE_DAYS,
@@ -88,16 +93,37 @@ def build_coverage_index(
     }
 
 
+def refresh_purchase_status(
+    *,
+    output_path: str | Path = DEFAULT_PURCHASE_STATUS_PATH,
+    client: EastmoneyFundClient | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    frame = refresh_purchase_status_index(
+        output_path=output_path,
+        client=client or EastmoneyFundClient(),
+        progress_callback=progress_callback,
+    )
+    return {
+        "path": str(output_path),
+        "count": int(len(frame)),
+        "updated_at": _latest_text(frame.get("checked_at")),
+    }
+
+
 def get_data_status(
     *,
     coverage_path: str | Path = DEFAULT_COVERAGE_PATH,
     correlation_path: str | Path = DEFAULT_CORRELATION_PATH,
+    purchase_status_path: str | Path = DEFAULT_PURCHASE_STATUS_PATH,
 ) -> dict[str, Any]:
     catalog = load_fund_catalog()
     coverage_path = Path(coverage_path)
     coverage = load_coverage_index(coverage_path)
     correlation_path = Path(correlation_path)
     correlation_summary = load_correlation_summary(correlation_path)
+    purchase_status_path = Path(purchase_status_path)
+    purchase_status = load_purchase_status_index(purchase_status_path)
     return {
         "fund_catalog": {
             "exists": not catalog.empty,
@@ -114,6 +140,12 @@ def get_data_status(
             "exists": correlation_path.exists(),
             "path": str(correlation_path),
             **correlation_summary,
+        },
+        "purchase_status": {
+            "exists": purchase_status_path.exists(),
+            "path": str(purchase_status_path),
+            "count": int(len(purchase_status)),
+            "latest_checked_at": _latest_text(purchase_status.get("checked_at")),
         },
     }
 

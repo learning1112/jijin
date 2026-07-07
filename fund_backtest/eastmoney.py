@@ -44,6 +44,25 @@ class FundSeries:
     frame: pd.DataFrame
 
 
+@dataclass(frozen=True)
+class FundPurchaseStatus:
+    code: str
+    name: str
+    fund_type: str
+    latest_value: str
+    latest_date: str
+    purchase_status: str
+    redeem_status: str
+    next_open_date: str
+    min_purchase_amount: str
+    purchase_limit: str
+    buy_status_code: str
+    fee_rate: str
+    can_purchase: bool
+    is_limited: bool
+    availability: str
+
+
 class EastmoneyFundClient:
     """Client for public Eastmoney/Tiantian Fund JavaScript endpoints."""
 
@@ -88,6 +107,20 @@ class EastmoneyFundClient:
             time.sleep(self.pause_seconds)
         return parse_pingzhongdata(response.text, code=code)
 
+    def fetch_purchase_statuses(self, page_size: int = 30000) -> list[FundPurchaseStatus]:
+        url = "https://fund.eastmoney.com/Data/Fund_JJJZ_Data.aspx"
+        params = {
+            "t": "8",
+            "page": f"1,{page_size}",
+            "js": "reData",
+            "sort": "fcode,asc",
+        }
+        response = self.session.get(url, params=params, headers=DEFAULT_HEADERS, timeout=self.timeout)
+        response.raise_for_status()
+        if self.pause_seconds:
+            time.sleep(self.pause_seconds)
+        return parse_purchase_status_response(response.text)
+
 
 def parse_pingzhongdata(text: str, code: str = "") -> FundSeries:
     """Parse a pingzhongdata JavaScript response into a normalized series."""
@@ -112,11 +145,68 @@ def parse_pingzhongdata(text: str, code: str = "") -> FundSeries:
     raise ValueError("No supported net-worth series found in pingzhongdata response.")
 
 
+def parse_purchase_status_response(text: str) -> list[FundPurchaseStatus]:
+    rows = _extract_purchase_status_rows(text)
+    return [_purchase_status_from_row(row) for row in rows]
+
+
 def _parse_fund_code_search(text: str) -> list[list[str]]:
     match = re.search(r"=\s*(\[.*\])\s*;?\s*$", text.strip(), re.DOTALL)
     if not match:
         raise ValueError("Unexpected fundcode_search.js response format.")
     return json.loads(match.group(1))
+
+
+def _extract_purchase_status_rows(text: str) -> list[list[str]]:
+    match = re.search(r"datas\s*:\s*(\[.*?\])\s*,\s*record\s*:", text.strip(), re.DOTALL)
+    if not match:
+        raise ValueError("Unexpected purchase status response format.")
+    return json.loads(match.group(1))
+
+
+def _purchase_status_from_row(row: list) -> FundPurchaseStatus:
+    values = ["" if value is None else str(value).strip() for value in row]
+    values += [""] * max(0, 13 - len(values))
+    code = values[0].zfill(6)
+    purchase_status = values[5]
+    purchase_limit = values[9]
+    buy_status_code = values[11]
+    can_purchase = _can_purchase(purchase_status, buy_status_code)
+    is_limited = can_purchase and _is_purchase_limited(purchase_status, purchase_limit)
+    availability = "限额" if is_limited else "可购买" if can_purchase else "不可购买"
+    return FundPurchaseStatus(
+        code=code,
+        name=values[1],
+        fund_type=values[2],
+        latest_value=values[3],
+        latest_date=values[4],
+        purchase_status=purchase_status,
+        redeem_status=values[6],
+        next_open_date=values[7],
+        min_purchase_amount=values[8],
+        purchase_limit=purchase_limit,
+        buy_status_code=buy_status_code,
+        fee_rate=values[12],
+        can_purchase=can_purchase,
+        is_limited=is_limited,
+        availability=availability,
+    )
+
+
+def _can_purchase(purchase_status: str, buy_status_code: str) -> bool:
+    if buy_status_code not in {"1", "2", "3", "8", "9"}:
+        return False
+    blocked_words = ["暂停", "停止", "封闭", "终止", "失败", "不可", "不开放"]
+    return not any(word in purchase_status for word in blocked_words)
+
+
+def _is_purchase_limited(purchase_status: str, purchase_limit: str) -> bool:
+    if "限" in purchase_status:
+        return True
+    try:
+        return 0 <= float(purchase_limit) < 800000000
+    except (TypeError, ValueError):
+        return False
 
 
 def _load_js_assignment(text: str, variable: str):

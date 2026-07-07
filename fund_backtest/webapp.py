@@ -16,7 +16,8 @@ import pandas as pd
 
 from .backtest import BacktestResult, normalize_weights, run_backtest
 from .correlation import compute_correlation_index, load_correlation_payload
-from .data_management import build_coverage_index, get_data_status, refresh_fund_catalog
+from .data_management import build_coverage_index, get_data_status, refresh_fund_catalog, refresh_purchase_status
+from .purchase_status import DEFAULT_PURCHASE_STATUS_PATH, attach_purchase_status_fields, filter_purchase_availability
 from .screening import (
     DEFAULT_COVERAGE_PATH,
     DEFAULT_MAX_STALE_DAYS,
@@ -145,10 +146,19 @@ APP_HTML = r"""<!doctype html>
       box-shadow: var(--shadow);
     }
     aside {
-      padding: 16px;
       align-self: start;
       position: sticky;
       top: 74px;
+      display: grid;
+      grid-template-rows: minmax(0, 1fr) auto;
+      max-height: calc(100vh - 90px);
+      overflow: hidden;
+    }
+    .portfolio-scroll {
+      min-height: 0;
+      overflow-y: auto;
+      padding: 16px;
+      scrollbar-gutter: stable;
     }
     main {
       display: grid;
@@ -208,7 +218,10 @@ APP_HTML = r"""<!doctype html>
     .actions {
       display: flex;
       gap: 8px;
-      margin-top: 14px;
+      margin: 0;
+      padding: 10px 16px 16px;
+      border-top: 1px solid var(--line);
+      background: var(--panel);
     }
     .actions .primary { flex: 1; }
     .section-head {
@@ -278,15 +291,80 @@ APP_HTML = r"""<!doctype html>
     .table-scroll table td {
       font-size: 12px;
     }
-    .correlation-layout {
-      display: grid;
-      grid-template-columns: minmax(0, 1.1fr) minmax(360px, 1.4fr);
-      gap: 16px;
-      align-items: start;
+    .correlation-table {
+      min-height: 360px;
     }
-    .heatmap {
-      height: 360px;
-      cursor: default;
+    .fund-cell {
+      display: grid;
+      gap: 3px;
+      min-width: 190px;
+      line-height: 1.35;
+      white-space: normal;
+    }
+    .fund-code-text {
+      color: var(--ink);
+      font-weight: 600;
+    }
+    .fund-name-text {
+      color: var(--ink);
+    }
+    .fund-type-text {
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .purchase-badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 20px;
+      padding: 0 7px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .purchase-open {
+      background: #e8f4ef;
+      color: var(--green);
+    }
+    .purchase-limited {
+      background: #fff4df;
+      color: var(--yellow);
+    }
+    .purchase-closed {
+      background: #f9e8ea;
+      color: var(--red);
+    }
+    .purchase-unknown {
+      background: #eef2f6;
+      color: var(--muted);
+    }
+    .sort-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
+      height: 20px;
+      margin-left: 6px;
+      padding: 0;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: #f5f7fa;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1;
+      cursor: pointer;
+      vertical-align: middle;
+      transition: background 0.15s, color 0.15s, border-color 0.15s;
+    }
+    .sort-icon:hover {
+      background: #eaf1fb;
+      color: #2563eb;
+      border-color: #c7d7ee;
+    }
+    .sort-icon.is-active {
+      background: #2563eb;
+      border-color: #2563eb;
+      color: #fff;
     }
     .checkline {
       display: flex;
@@ -400,11 +478,16 @@ APP_HTML = r"""<!doctype html>
       .workspace, .charts {
         grid-template-columns: 1fr;
       }
-      .tool-grid, .correlation-layout {
+      .tool-grid {
         grid-template-columns: 1fr;
       }
       aside {
         position: static;
+        top: auto;
+        max-height: calc(100vh - 20px);
+      }
+      .portfolio-scroll {
+        overflow-y: auto;
       }
       .metrics {
         grid-template-columns: repeat(3, minmax(130px, 1fr));
@@ -430,6 +513,9 @@ APP_HTML = r"""<!doctype html>
       .fund-row, .fund-head {
         grid-template-columns: minmax(0, 1fr) 74px 36px;
       }
+      .actions {
+        padding: 10px 16px 16px;
+      }
       .chart-title {
         align-items: flex-start;
         display: grid;
@@ -448,44 +534,46 @@ APP_HTML = r"""<!doctype html>
     </header>
     <div class="workspace">
       <aside>
-        <h2>组合</h2>
-        <div class="form-grid">
-          <label><span>初始资金</span><input id="initialCash" type="number" min="1" step="100" value="10000"></label>
-          <label><span>起始日期</span><input id="startDate" type="date" value="2021-01-01"></label>
-          <label><span>结束日期</span><input id="endDate" type="date"></label>
-          <label><span>历史数据年限</span><select id="minHistoryYears">
-            <option value="0" selected>不限</option>
-            <option value="5">≥5年</option>
-            <option value="10">≥10年</option>
-          </select></label>
-          <label><span>再平衡</span><select id="rebalanceFrequency">
-            <option value="none">不再平衡</option>
-            <option value="monthly">每月</option>
-            <option value="quarterly">每季度</option>
-            <option value="yearly">每年</option>
-          </select></label>
-          <label><span>交易费率</span><input id="feeRate" type="number" min="0" step="0.0001" value="0"></label>
-          <label><span>定投金额</span><input id="contributionAmount" type="number" min="0" step="100" value="0"></label>
-          <label><span>定投频率</span><select id="contributionFrequency">
-            <option value="none">不定投</option>
-            <option value="daily">每个交易日</option>
-            <option value="weekly">每周</option>
-            <option value="monthly" selected>每月</option>
-            <option value="quarterly">每季度</option>
-            <option value="yearly">每年</option>
-          </select></label>
-          <label id="contributionWeekdayLabel"><span>定投星期</span><select id="contributionWeekday">
-            <option value="monday" selected>周一</option>
-            <option value="tuesday">周二</option>
-            <option value="wednesday">周三</option>
-            <option value="thursday">周四</option>
-            <option value="friday">周五</option>
-          </select></label>
-          <label><span>缓存目录</span><input id="cacheDir" value="data/fund_cache"></label>
+        <div class="portfolio-scroll">
+          <h2>组合</h2>
+          <div class="form-grid">
+            <label><span>初始资金</span><input id="initialCash" type="number" min="1" step="100" value="10000"></label>
+            <label><span>起始日期</span><input id="startDate" type="date" value="2021-01-01"></label>
+            <label><span>结束日期</span><input id="endDate" type="date"></label>
+            <label><span>历史数据年限</span><select id="minHistoryYears">
+              <option value="0" selected>不限</option>
+              <option value="5">≥5年</option>
+              <option value="10">≥10年</option>
+            </select></label>
+            <label><span>再平衡</span><select id="rebalanceFrequency">
+              <option value="none">不再平衡</option>
+              <option value="monthly">每月</option>
+              <option value="quarterly">每季度</option>
+              <option value="yearly">每年</option>
+            </select></label>
+            <label><span>交易费率</span><input id="feeRate" type="number" min="0" step="0.0001" value="0"></label>
+            <label><span>定投金额</span><input id="contributionAmount" type="number" min="0" step="100" value="0"></label>
+            <label><span>定投频率</span><select id="contributionFrequency">
+              <option value="none">不定投</option>
+              <option value="daily">每个交易日</option>
+              <option value="weekly">每周</option>
+              <option value="monthly" selected>每月</option>
+              <option value="quarterly">每季度</option>
+              <option value="yearly">每年</option>
+            </select></label>
+            <label id="contributionWeekdayLabel"><span>定投星期</span><select id="contributionWeekday">
+              <option value="monday" selected>周一</option>
+              <option value="tuesday">周二</option>
+              <option value="wednesday">周三</option>
+              <option value="thursday">周四</option>
+              <option value="friday">周五</option>
+            </select></label>
+            <label><span>缓存目录</span><input id="cacheDir" value="data/fund_cache"></label>
+          </div>
+          <div class="checkline"><input id="refresh" type="checkbox"><span>刷新天天基金数据</span></div>
+          <div class="fund-head"><span>基金代码</span><span>权重</span><span></span></div>
+          <div id="fundRows"></div>
         </div>
-        <div class="checkline"><input id="refresh" type="checkbox"><span>刷新天天基金数据</span></div>
-        <div class="fund-head"><span>基金代码</span><span>权重</span><span></span></div>
-        <div id="fundRows"></div>
         <div class="actions">
           <button class="icon" id="addFund" type="button" title="添加基金">+</button>
           <button class="primary" id="runBacktest" type="button">运行回测</button>
@@ -502,6 +590,7 @@ APP_HTML = r"""<!doctype html>
             <label><span>覆盖截至日期</span><input id="coverageAsOf" type="date"></label>
             <label class="checkline"><input id="coverageRefresh" type="checkbox"><span>重抓历史数据</span></label>
             <button class="primary" id="buildCoverage" type="button">生成覆盖索引</button>
+            <button id="refreshPurchaseStatus" type="button">更新申购状态</button>
           </div>
           <div id="dataJobStatus" class="job-status">就绪</div>
         </section>
@@ -546,13 +635,15 @@ APP_HTML = r"""<!doctype html>
               <option value="10">≥10年</option>
             </select></label>
             <label><span>截至日期</span><input id="corrAsOf" type="date"></label>
-            <label><span>搜索</span><input id="corrQuery" placeholder="代码或名称"></label>
+            <label><span>基金A</span><input id="corrQueryA" placeholder="代码或名称"></label>
+            <label><span>基金B</span><input id="corrQueryB" placeholder="代码或名称"></label>
             <label><span>排序</span><select id="corrSort">
               <option value="abs_desc" selected>相关强度（强→弱）</option>
               <option value="abs_asc">弱相关优先</option>
               <option value="corr_desc">正相关（高→低）</option>
               <option value="corr_asc">负相关（低→高）</option>
               <option value="sharpe_b_desc">Sharpe高</option>
+              <option value="sharpe_b_asc">Sharpe低</option>
             </select></label>
             <label><span>相关性区间</span><select id="corrRange">
               <option value="all" selected>全部</option>
@@ -570,6 +661,14 @@ APP_HTML = r"""<!doctype html>
               <option value="2_3">2 ~ 3</option>
               <option value="gt3">≥ 3</option>
             </select></label>
+            <label><span>B购买状态</span><select id="corrPurchaseAvailability">
+              <option value="all" selected>全部</option>
+              <option value="tradable">B可买含限额</option>
+              <option value="open">B可购买</option>
+              <option value="limited">B限额</option>
+              <option value="closed">B不可购买</option>
+              <option value="unknown">B未知</option>
+            </select></label>
             <label><span>每页</span><select id="corrPageSize">
               <option value="10" selected>10</option>
               <option value="50">50</option>
@@ -581,15 +680,37 @@ APP_HTML = r"""<!doctype html>
             <button id="refreshCorrelation" type="button">刷新结果</button>
           </div>
           <div id="correlationJobStatus" class="job-status">就绪</div>
-          <div class="correlation-layout">
-            <canvas class="heatmap" id="correlationHeatmap" width="520" height="360"></canvas>
-            <div id="correlationTable" class="table-scroll"></div>
-          </div>
+          <div id="correlationTable" class="table-scroll correlation-table"></div>
           <div class="pager">
             <button id="corrPrevPage" type="button">上一页</button>
             <span id="corrPageInfo">第 1 / 1 页</span>
             <button id="corrNextPage" type="button">下一页</button>
           </div>
+        </section>
+        <section class="panel">
+          <div class="section-head">
+            <h2>基金名称匹配</h2>
+            <span id="nameMatchSummary" class="inline-status">暂无数据</span>
+          </div>
+          <div class="tool-grid">
+            <label><span>中文名称</span><input id="nameMatchQuery" placeholder="输入基金名称"></label>
+            <label><span>历史数据年限</span><select id="nameMatchHistoryYears">
+              <option value="0" selected>不限</option>
+              <option value="5">≥5年</option>
+              <option value="10">≥10年</option>
+            </select></label>
+            <label><span>购买状态</span><select id="nameMatchPurchaseAvailability">
+              <option value="all" selected>全部</option>
+              <option value="tradable">可买含限额</option>
+              <option value="open">可购买</option>
+              <option value="limited">限额</option>
+              <option value="closed">不可购买</option>
+              <option value="unknown">未知</option>
+            </select></label>
+            <label><span>截至日期</span><input id="nameMatchAsOf" type="date"></label>
+            <button class="primary" id="runNameMatch" type="button">匹配基金</button>
+          </div>
+          <div id="nameMatchResults" class="table-scroll"></div>
         </section>
         <section class="panel">
           <h2>持仓</h2>
@@ -630,6 +751,14 @@ APP_HTML = r"""<!doctype html>
       return new Date().toISOString().slice(0, 10);
     }
 
+    function requestErrorMessage(error) {
+      const message = error?.message || "请求失败";
+      if (message === "Failed to fetch" || message.includes("NetworkError")) {
+        return "无法连接本地网站服务，请确认启动网站窗口仍在运行，然后刷新页面。";
+      }
+      return message;
+    }
+
     async function postJson(url, payload = {}) {
       const response = await fetch(url, {
         method: "POST",
@@ -655,7 +784,8 @@ APP_HTML = r"""<!doctype html>
       const catalog = data.fund_catalog || {};
       const coverage = data.coverage || {};
       const correlations = data.correlations || {};
-      $("dataStatus").textContent = `基金 ${catalog.count || 0} · 覆盖 ${coverage.count || 0} · 相关 ${correlations.pair_count || 0}`;
+      const purchase = data.purchase_status || {};
+      $("dataStatus").textContent = `基金 ${catalog.count || 0} · 覆盖 ${coverage.count || 0} · 申购 ${purchase.count || 0} · 相关 ${correlations.pair_count || 0}`;
     }
 
     async function startFundCatalogJob() {
@@ -688,9 +818,30 @@ APP_HTML = r"""<!doctype html>
           document.querySelectorAll(".fund-row").forEach((row) => {
             fetchFundDetail(row.querySelector(".fund-code").value, row);
           });
+          if ($("nameMatchQuery").value.trim()) matchFundsByName();
         });
       } catch (error) {
         $("buildCoverage").disabled = false;
+        $("dataJobStatus").textContent = error.message;
+      }
+    }
+
+    async function startPurchaseStatusJob() {
+      $("refreshPurchaseStatus").disabled = true;
+      $("dataJobStatus").textContent = "申购状态更新中";
+      try {
+        const job = await postJson("/api/data/purchase-status");
+        pollJob(job.id, "dataJobStatus", () => {
+          $("refreshPurchaseStatus").disabled = false;
+          refreshDataStatus();
+          fetchFundSuggestions(document.querySelector(".fund-code")?.value || "");
+          document.querySelectorAll(".fund-row").forEach((row) => {
+            fetchFundDetail(row.querySelector(".fund-code").value, row);
+          });
+          if ($("nameMatchQuery").value.trim()) matchFundsByName();
+        });
+      } catch (error) {
+        $("refreshPurchaseStatus").disabled = false;
         $("dataJobStatus").textContent = error.message;
       }
     }
@@ -719,9 +870,10 @@ APP_HTML = r"""<!doctype html>
         }
         state.jobTimers[jobId] = setTimeout(() => pollJob(jobId, elementId, onDone), 900);
       } catch (error) {
-        $(elementId).textContent = error.message;
+        const message = requestErrorMessage(error);
+        $(elementId).textContent = message;
         delete state.jobTimers[jobId];
-        onDone?.({ status: "failed", error: error.message });
+        onDone?.({ status: "failed", error: message });
       }
     }
 
@@ -732,7 +884,8 @@ APP_HTML = r"""<!doctype html>
         const job = await postJson("/api/correlations", {
           min_history_years: Number($("corrMinHistoryYears").value || 5),
           as_of: $("corrAsOf").value || todayText(),
-          query: $("corrQuery").value || ""
+          query_a: $("corrQueryA").value || "",
+          query_b: $("corrQueryB").value || ""
         });
         pollJob(job.id, "correlationJobStatus", (finalJob) => {
           $("computeCorrelation").disabled = false;
@@ -741,7 +894,7 @@ APP_HTML = r"""<!doctype html>
         });
       } catch (error) {
         $("computeCorrelation").disabled = false;
-        $("correlationJobStatus").textContent = error.message;
+        $("correlationJobStatus").textContent = requestErrorMessage(error);
       }
     }
 
@@ -767,10 +920,12 @@ APP_HTML = r"""<!doctype html>
       const corrRange = CORR_RANGE_MAP[$("corrRange").value] || {};
       const sharpeRange = SHARPE_RANGE_MAP[$("sharpeRange").value] || {};
       const params = new URLSearchParams({
-        q: $("corrQuery").value || "",
+        q_a: $("corrQueryA").value || "",
+        q_b: $("corrQueryB").value || "",
         sort: $("corrSort").value,
         page: String(state.correlationPage),
-        page_size: $("corrPageSize").value || "10"
+        page_size: $("corrPageSize").value || "10",
+        purchase_availability: $("corrPurchaseAvailability").value || "all"
       });
       if (corrRange.min !== undefined) params.set("corr_min", String(corrRange.min));
       if (corrRange.max !== undefined) params.set("corr_max", String(corrRange.max));
@@ -785,11 +940,10 @@ APP_HTML = r"""<!doctype html>
         state.correlationPage = Number(state.correlationSummary.page || state.correlationPage);
         renderCorrelationSummary(state.correlationSummary);
         renderCorrelationTable(state.correlationRows);
-        drawCorrelationHeatmap(state.correlationRows);
         renderCorrelationPager(state.correlationSummary);
         if (payload.warning) $("correlationJobStatus").textContent = payload.warning;
       } catch (error) {
-        $("correlationJobStatus").textContent = error.message;
+        $("correlationJobStatus").textContent = requestErrorMessage(error);
       }
     }
 
@@ -824,28 +978,73 @@ APP_HTML = r"""<!doctype html>
       $("corrNextPage").disabled = page >= totalPages;
     }
 
+    const CORR_SORT_CYCLE = {
+      correlation: ["corr_desc", "corr_asc"],
+      sharpe_b: ["sharpe_b_desc", "sharpe_b_asc"]
+    };
+    const CORR_SORT_LABEL = {
+      corr_desc: "正相关 ↓",
+      corr_asc: "负相关 ↑",
+      sharpe_b_desc: "Sharpe 高 ↓",
+      sharpe_b_asc: "Sharpe 低 ↑"
+    };
+
+    function sortIconMarkup(column, currentSort) {
+      const cycle = CORR_SORT_CYCLE[column];
+      const isActive = cycle && cycle.indexOf(currentSort) >= 0;
+      const cls = isActive ? "sort-icon is-active" : "sort-icon";
+      const symbol = !isActive ? "↕" : (currentSort.endsWith("_desc") ? "↓" : "↑");
+      const fallback = column === "correlation" ? "按相关系数排序" : "按 B Sharpe 排序";
+      const label = (isActive ? CORR_SORT_LABEL[currentSort] : "") || fallback;
+      return `<button type="button" class="${cls}" data-column="${column}" title="${label}">${symbol}</button>`;
+    }
+
+    function applyCorrelationSort(column) {
+      const cycle = CORR_SORT_CYCLE[column];
+      if (!cycle) return;
+      const current = $("corrSort").value;
+      const idx = cycle.indexOf(current);
+      const next = idx >= 0 ? (idx + 1) % cycle.length : 0;
+      $("corrSort").value = cycle[next];
+      resetCorrelationPageAndLoad();
+    }
+
+    function fundCellMarkup(code, name, fundType, availability, purchaseStatus, purchaseLimitText) {
+      const status = purchaseStatus ? ` · ${escapeHtml(purchaseStatus)}` : "";
+      const limit = purchaseLimitText ? ` · ${escapeHtml(purchaseLimitText)}` : "";
+      return `
+        <div class="fund-cell">
+          <span class="fund-code-text">${escapeHtml(code || "")}</span>
+          <span class="fund-name-text">${escapeHtml(name || "未命名基金")}</span>
+          <span class="fund-type-text">类型：${escapeHtml(fundType || "暂无")}</span>
+          <span class="fund-type-text">${purchaseBadgeMarkup(availability)}${status}${limit}</span>
+        </div>
+      `;
+    }
+
     function renderCorrelationTable(rows) {
       if (!rows.length) {
         $("correlationTable").innerHTML = `<div class="empty">暂无相关性数据</div>`;
         return;
       }
+      const currentSort = $("corrSort").value;
       $("correlationTable").innerHTML = `
         <table>
           <thead>
             <tr>
               <th>基金A</th>
               <th>基金B</th>
-              <th>相关系数</th>
+              <th>相关系数 ${sortIconMarkup("correlation", currentSort)}</th>
               <th>A Sharpe</th>
-              <th>B Sharpe</th>
+              <th>B Sharpe ${sortIconMarkup("sharpe_b", currentSort)}</th>
               <th>样本数</th>
             </tr>
           </thead>
           <tbody>
             ${rows.map((row) => `
               <tr>
-                <td>${escapeHtml(row.code_a)}<br>${escapeHtml(row.name_a || "")}</td>
-                <td>${escapeHtml(row.code_b)}<br>${escapeHtml(row.name_b || "")}</td>
+                <td>${fundCellMarkup(row.code_a, row.name_a, row.fund_type_a, row.availability_a, row.purchase_status_a, row.purchase_limit_text_a)}</td>
+                <td>${fundCellMarkup(row.code_b, row.name_b, row.fund_type_b, row.availability_b, row.purchase_status_b, row.purchase_limit_text_b)}</td>
                 <td>${formatCorrelation(row.correlation)}</td>
                 <td>${formatSharpe(row.sharpe_a)}</td>
                 <td>${formatSharpe(row.sharpe_b)}</td>
@@ -854,73 +1053,9 @@ APP_HTML = r"""<!doctype html>
           </tbody>
         </table>
       `;
-    }
-
-    function drawCorrelationHeatmap(rows) {
-      const canvas = $("correlationHeatmap");
-      const ctx = canvas.getContext("2d");
-      const dpr = window.devicePixelRatio || 1;
-      const rect = canvas.getBoundingClientRect();
-      canvas.width = Math.max(1, Math.floor(rect.width * dpr));
-      canvas.height = Math.max(1, Math.floor(rect.height * dpr));
-      ctx.scale(dpr, dpr);
-      const width = rect.width;
-      const height = rect.height;
-      ctx.clearRect(0, 0, width, height);
-      const codes = [];
-      rows.forEach((row) => {
-        [row.code_a, row.code_b].forEach((code) => {
-          if (code && !codes.includes(code) && codes.length < 16) codes.push(code);
-        });
+      $("correlationTable").querySelectorAll(".sort-icon").forEach((btn) => {
+        btn.addEventListener("click", () => applyCorrelationSort(btn.dataset.column));
       });
-      if (!codes.length) {
-        ctx.fillStyle = "#66717f";
-        ctx.font = "14px Arial";
-        ctx.fillText("暂无相关性数据", 18, 32);
-        return;
-      }
-      const label = 58;
-      const gap = 2;
-      const size = Math.floor(Math.min((width - label - 12) / codes.length, (height - label - 12) / codes.length));
-      const map = new Map();
-      rows.forEach((row) => {
-        const value = Number(row.correlation);
-        if (!Number.isFinite(value)) return;
-        map.set(`${row.code_a}|${row.code_b}`, value);
-        map.set(`${row.code_b}|${row.code_a}`, value);
-      });
-      ctx.font = "11px Arial";
-      ctx.textAlign = "right";
-      ctx.textBaseline = "middle";
-      codes.forEach((code, index) => {
-        const pos = label + index * size + size / 2;
-        ctx.fillStyle = "#66717f";
-        ctx.fillText(code, label - 8, pos);
-        ctx.save();
-        ctx.translate(pos, label - 8);
-        ctx.rotate(-Math.PI / 4);
-        ctx.textAlign = "left";
-        ctx.fillText(code, 0, 0);
-        ctx.restore();
-      });
-      codes.forEach((rowCode, rowIndex) => {
-        codes.forEach((colCode, colIndex) => {
-          const value = rowCode === colCode ? 1 : map.get(`${rowCode}|${colCode}`);
-          const x = label + colIndex * size;
-          const y = label + rowIndex * size;
-          ctx.fillStyle = correlationColor(value);
-          ctx.fillRect(x, y, Math.max(size - gap, 1), Math.max(size - gap, 1));
-        });
-      });
-    }
-
-    function correlationColor(value) {
-      if (!Number.isFinite(value)) return "#f1f4f7";
-      const intensity = Math.min(Math.abs(value), 1);
-      if (value >= 0) {
-        return `rgba(36, 125, 143, ${0.16 + intensity * 0.76})`;
-      }
-      return `rgba(189, 63, 69, ${0.16 + intensity * 0.76})`;
     }
 
     function formatCorrelation(value) {
@@ -930,6 +1065,79 @@ APP_HTML = r"""<!doctype html>
     function formatSharpe(value) {
       const number = Number(value);
       return Number.isFinite(number) ? number.toFixed(3) : "暂无";
+    }
+    function formatYears(value) {
+      const number = Number(value);
+      return Number.isFinite(number) ? number.toFixed(2) : "暂无";
+    }
+    function purchaseBadgeMarkup(availability) {
+      const text = availability || "未知";
+      const cls = text === "可购买" ? "purchase-open" : text === "限额" ? "purchase-limited" : text === "不可购买" ? "purchase-closed" : "purchase-unknown";
+      return `<span class="purchase-badge ${cls}">${escapeHtml(text)}</span>`;
+    }
+
+    async function matchFundsByName() {
+      const query = $("nameMatchQuery").value.trim();
+      if (!query) {
+        $("nameMatchSummary").textContent = "暂无数据";
+        renderNameMatchResults([]);
+        return;
+      }
+      const params = new URLSearchParams({ q: query, name_only: "1", limit: "100" });
+      params.set("purchase_availability", $("nameMatchPurchaseAvailability").value || "all");
+      if ($("nameMatchHistoryYears").value !== "0") {
+        params.set("min_history_years", $("nameMatchHistoryYears").value);
+        params.set("as_of", $("nameMatchAsOf").value || todayText());
+      }
+      try {
+        const response = await fetch(`/api/funds?${params.toString()}`);
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "匹配失败");
+        const items = payload.items || [];
+        renderNameMatchResults(items);
+        $("nameMatchSummary").textContent = `匹配 ${items.length} 只`;
+        if (payload.warning) $("nameMatchSummary").textContent = payload.warning;
+      } catch (error) {
+        $("nameMatchSummary").textContent = error.message;
+      }
+    }
+
+    function renderNameMatchResults(rows) {
+      if (!rows.length) {
+        $("nameMatchResults").innerHTML = `<div class="empty">暂无匹配基金</div>`;
+        return;
+      }
+      $("nameMatchResults").innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>代码</th>
+              <th>名称</th>
+              <th>类型</th>
+              <th>购买状态</th>
+              <th>申购状态</th>
+              <th>限额</th>
+              <th>开始日期</th>
+              <th>最新日期</th>
+              <th>历史年限</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map((row) => `
+              <tr>
+                <td>${escapeHtml(row.code || "")}</td>
+                <td>${escapeHtml(row.name || "")}</td>
+                <td>${escapeHtml(row.fund_type || "暂无")}</td>
+                <td>${purchaseBadgeMarkup(row.availability)}</td>
+                <td>${escapeHtml(row.purchase_status || "暂无")}</td>
+                <td>${escapeHtml(row.purchase_limit_text || "暂无")}</td>
+                <td>${escapeHtml(row.data_start || "暂无")}</td>
+                <td>${escapeHtml(row.data_end || "暂无")}</td>
+                <td>${formatYears(row.history_years)}</td>
+              </tr>`).join("")}
+          </tbody>
+        </table>
+      `;
     }
 
     function addFundRow(code = "", weight = "") {
@@ -978,7 +1186,9 @@ APP_HTML = r"""<!doctype html>
       payload.items.forEach((item) => {
         const option = document.createElement("option");
         option.value = item.code;
-        option.label = `${item.code} ${item.name} ${item.fund_type} ${item.data_start ? "开始:" + item.data_start : ""}`;
+        const purchase = item.availability ? ` ${item.availability}` : "";
+        const limit = item.purchase_limit_text ? ` 限额:${item.purchase_limit_text}` : "";
+        option.label = `${item.code} ${item.name} ${item.fund_type}${purchase}${limit} ${item.data_start ? "开始:" + item.data_start : ""}`;
         list.appendChild(option);
       });
     }
@@ -1008,8 +1218,11 @@ APP_HTML = r"""<!doctype html>
         const name = item.name || "未命名基金";
         const start = item.data_start || "暂无";
         const type = item.fund_type ? ` · ${item.fund_type}` : "";
-        meta.textContent = `${name}${type} · 开始：${start}`;
-        meta.title = `${item.code} ${name} ${item.fund_type || ""} 开始：${start}`;
+        const availability = item.availability || "未知";
+        const purchaseStatus = item.purchase_status ? ` · ${item.purchase_status}` : "";
+        const limit = item.purchase_limit_text ? ` · 限额：${item.purchase_limit_text}` : "";
+        meta.textContent = `${name}${type} · 开始：${start} · ${availability}${purchaseStatus}${limit}`;
+        meta.title = `${item.code} ${name} ${item.fund_type || ""} 开始：${start} ${availability} ${item.purchase_status || ""} ${item.purchase_limit_text || ""}`;
       } catch (error) {
         meta.textContent = "名称：查询失败 · 开始：暂无";
       }
@@ -1364,30 +1577,39 @@ APP_HTML = r"""<!doctype html>
     $("runBacktest").addEventListener("click", runBacktest);
     $("refreshCatalog").addEventListener("click", startFundCatalogJob);
     $("buildCoverage").addEventListener("click", startCoverageJob);
+    $("refreshPurchaseStatus").addEventListener("click", startPurchaseStatusJob);
     $("computeCorrelation").addEventListener("click", startCorrelationJob);
     $("refreshCorrelation").addEventListener("click", () => loadCorrelations());
-    $("corrQuery").addEventListener("input", debounce(resetCorrelationPageAndLoad, 250));
+    $("corrQueryA").addEventListener("input", debounce(resetCorrelationPageAndLoad, 250));
+    $("corrQueryB").addEventListener("input", debounce(resetCorrelationPageAndLoad, 250));
     $("corrSort").addEventListener("change", resetCorrelationPageAndLoad);
     $("corrPageSize").addEventListener("change", resetCorrelationPageAndLoad);
     $("corrRange").addEventListener("change", resetCorrelationPageAndLoad);
     $("sharpeRange").addEventListener("change", resetCorrelationPageAndLoad);
+    $("corrPurchaseAvailability").addEventListener("change", resetCorrelationPageAndLoad);
     $("corrPrevPage").addEventListener("click", () => changeCorrelationPage(-1));
     $("corrNextPage").addEventListener("click", () => changeCorrelationPage(1));
+    $("runNameMatch").addEventListener("click", matchFundsByName);
+    $("nameMatchQuery").addEventListener("input", debounce(matchFundsByName, 300));
+    $("nameMatchHistoryYears").addEventListener("change", matchFundsByName);
+    $("nameMatchPurchaseAvailability").addEventListener("change", matchFundsByName);
+    $("nameMatchAsOf").addEventListener("change", matchFundsByName);
     $("resetValueChart").addEventListener("click", () => resetChart("valueChart"));
     $("resetDrawdownChart").addEventListener("click", () => resetChart("drawdownChart"));
     $("contributionFrequency").addEventListener("change", updateContributionWeekdayState);
     window.addEventListener("resize", () => {
       if (state.result) renderAll(state.result);
-      drawCorrelationHeatmap(state.correlationRows);
     });
     $("coverageAsOf").value = todayText();
     $("corrAsOf").value = todayText();
+    $("nameMatchAsOf").value = todayText();
     setupChartZoom("valueChart");
     setupChartZoom("drawdownChart");
     defaultFunds.forEach(([code, weight]) => addFundRow(code, weight));
     renderMetrics({});
     renderAnnualMetrics([]);
     $("holdings").innerHTML = `<div class="empty">暂无持仓</div>`;
+    renderNameMatchResults([]);
     updateContributionWeekdayState();
     refreshDataStatus();
     loadCorrelations();
@@ -1475,11 +1697,16 @@ class BacktestRequestHandler(BaseHTTPRequestHandler):
             query = params.get("q", [""])[0]
             min_history_years = _float_or_default(params.get("min_history_years", [0])[0], 0.0)
             as_of = _blank_to_none(params.get("as_of", [""])[0])
+            limit = int(_float_or_default(params.get("limit", [20])[0], 20))
+            name_only = str(params.get("name_only", [""])[0]).strip().lower() in {"1", "true", "yes"}
+            purchase_availability = params.get("purchase_availability", [""])[0]
             payload = search_funds_payload(
                 query,
-                limit=20,
+                limit=limit,
                 min_history_years=min_history_years,
                 as_of=as_of,
+                name_only=name_only,
+                purchase_availability=purchase_availability,
             )
             self._send_json(payload)
             return
@@ -1487,30 +1714,36 @@ class BacktestRequestHandler(BaseHTTPRequestHandler):
             self._send_json(get_data_status())
             return
         if parsed.path == "/api/correlations":
-            params = parse_qs(parsed.query)
+            try:
+                params = parse_qs(parsed.query)
 
-            def _optional_float(name: str) -> float | None:
-                values = params.get(name)
-                if not values or values[0] == "":
-                    return None
-                try:
-                    value = float(values[0])
-                except (TypeError, ValueError):
-                    return None
-                return value if math.isfinite(value) else None
+                def _optional_float(name: str) -> float | None:
+                    values = params.get(name)
+                    if not values or values[0] == "":
+                        return None
+                    try:
+                        value = float(values[0])
+                    except (TypeError, ValueError):
+                        return None
+                    return value if math.isfinite(value) else None
 
-            payload = load_correlation_payload(
-                query=params.get("q", [""])[0],
-                sort=params.get("sort", ["abs_desc"])[0],
-                limit=int(_float_or_default(params.get("limit", [200])[0], 200)),
-                page=int(_float_or_default(params.get("page", [1])[0], 1)),
-                page_size=int(_float_or_default(params.get("page_size", [10])[0], 10)),
-                corr_min=_optional_float("corr_min"),
-                corr_max=_optional_float("corr_max"),
-                sharpe_min=_optional_float("sharpe_min"),
-                sharpe_max=_optional_float("sharpe_max"),
-            )
-            self._send_json(payload)
+                payload = load_correlation_payload(
+                    query=params.get("q", [""])[0],
+                    query_a=params.get("q_a", [""])[0],
+                    query_b=params.get("q_b", [""])[0],
+                    sort=params.get("sort", ["abs_desc"])[0],
+                    limit=int(_float_or_default(params.get("limit", [200])[0], 200)),
+                    page=int(_float_or_default(params.get("page", [1])[0], 1)),
+                    page_size=int(_float_or_default(params.get("page_size", [10])[0], 10)),
+                    corr_min=_optional_float("corr_min"),
+                    corr_max=_optional_float("corr_max"),
+                    sharpe_min=_optional_float("sharpe_min"),
+                    sharpe_max=_optional_float("sharpe_max"),
+                    purchase_availability=params.get("purchase_availability", [""])[0],
+                )
+                self._send_json(payload)
+            except Exception as exc:  # noqa: BLE001
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
         if parsed.path.startswith("/api/jobs/"):
             job_id = parsed.path.rsplit("/", 1)[-1]
@@ -1546,6 +1779,10 @@ class BacktestRequestHandler(BaseHTTPRequestHandler):
                 )
                 self._send_json(job, status=HTTPStatus.ACCEPTED)
                 return
+            if parsed.path == "/api/data/purchase-status":
+                job = start_job("purchase_status", lambda progress: refresh_purchase_status(progress_callback=progress))
+                self._send_json(job, status=HTTPStatus.ACCEPTED)
+                return
             if parsed.path == "/api/correlations":
                 payload = self._read_json()
                 job = start_job(
@@ -1554,6 +1791,8 @@ class BacktestRequestHandler(BaseHTTPRequestHandler):
                         min_history_years=_float_or_default(payload.get("min_history_years"), 5.0),
                         as_of=_blank_to_none(payload.get("as_of")),
                         query=str(payload.get("query") or ""),
+                        query_a=str(payload.get("query_a") or ""),
+                        query_b=str(payload.get("query_b") or ""),
                         progress_callback=progress,
                     ),
                 )
@@ -1679,12 +1918,16 @@ def search_funds(
     limit: int = 20,
     min_history_years: float = 0.0,
     as_of: str | None = None,
+    name_only: bool = False,
+    purchase_availability: str = "",
 ) -> list[dict[str, str]]:
     return search_funds_payload(
         query,
         limit=limit,
         min_history_years=min_history_years,
         as_of=as_of,
+        name_only=name_only,
+        purchase_availability=purchase_availability,
     )["items"]
 
 
@@ -1694,21 +1937,30 @@ def search_funds_payload(
     limit: int = 20,
     min_history_years: float = 0.0,
     as_of: str | None = None,
+    name_only: bool = False,
+    purchase_availability: str = "",
 ) -> dict[str, Any]:
     catalog = load_fund_catalog()
     if catalog.empty:
         return {"items": []}
+    limit = max(min(int(limit), 200), 1)
     q = str(query).strip().lower()
     if q:
-        mask = (
-            catalog["code"].str.lower().str.contains(q, na=False)
-            | catalog["name"].str.lower().str.contains(q, na=False)
-            | catalog["fund_type"].str.lower().str.contains(q, na=False)
-            | catalog["pinyin"].str.lower().str.contains(q, na=False)
-        )
+        name_mask = catalog["name"].str.lower().str.contains(q, na=False, regex=False)
+        if name_only:
+            mask = name_mask
+        else:
+            mask = (
+                catalog["code"].str.lower().str.contains(q, na=False, regex=False)
+                | name_mask
+                | catalog["fund_type"].str.lower().str.contains(q, na=False, regex=False)
+                | catalog["pinyin"].str.lower().str.contains(q, na=False, regex=False)
+            )
         catalog = catalog.loc[mask]
     warning = ""
     catalog = _attach_coverage_fields(catalog)
+    catalog = attach_purchase_status_fields(catalog, status_path=DEFAULT_PURCHASE_STATUS_PATH)
+    catalog = filter_purchase_availability(catalog, purchase_availability)
     if min_history_years > 0:
         coverage_path = Path(DEFAULT_COVERAGE_PATH)
         if coverage_path.exists():
@@ -1721,6 +1973,8 @@ def search_funds_payload(
             catalog = catalog.loc[catalog["code"].isin(set(coverage["code"]))]
         else:
             warning = "历史覆盖索引不存在，请在数据管理里生成，当前显示未筛选结果"
+    if not Path(DEFAULT_PURCHASE_STATUS_PATH).exists():
+        warning = _join_warning(warning, "申购状态索引不存在，请在数据管理里点击更新申购状态")
     payload: dict[str, Any] = {"items": catalog.head(limit).to_dict(orient="records")}
     if warning:
         payload["warning"] = warning
@@ -1742,6 +1996,12 @@ def _attach_coverage_fields(catalog: pd.DataFrame) -> pd.DataFrame:
     coverage = load_coverage_index(coverage_path)[["code", "data_start", "data_end", "history_years"]]
     output = output.drop(columns=["data_start", "data_end", "history_years"], errors="ignore")
     return output.merge(coverage, on="code", how="left").fillna("")
+
+
+def _join_warning(left: str, right: str) -> str:
+    if left and right:
+        return f"{left}。{right}"
+    return left or right
 
 
 def run_server(host: str = "127.0.0.1", port: int = 8000, *, open_browser: bool = False) -> None:

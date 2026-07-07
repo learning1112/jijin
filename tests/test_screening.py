@@ -151,16 +151,30 @@ class ScreeningWebTests(unittest.TestCase):
         self.assertIn("历史数据年限", APP_HTML)
         self.assertIn("minHistoryYears", APP_HTML)
         self.assertIn("fund-meta", APP_HTML)
+        self.assertIn("portfolio-scroll", APP_HTML)
         self.assertIn("开始：", APP_HTML)
         self.assertIn("resetValueChart", APP_HTML)
         self.assertIn("setupChartZoom", APP_HTML)
         self.assertIn("drawXAxisTicks", APP_HTML)
         self.assertIn("数据管理", APP_HTML)
         self.assertIn("生成覆盖索引", APP_HTML)
+        self.assertIn("更新申购状态", APP_HTML)
+        self.assertIn("purchase-badge", APP_HTML)
+        self.assertIn("corrPurchaseAvailability", APP_HTML)
+        self.assertIn("nameMatchPurchaseAvailability", APP_HTML)
+        self.assertIn("corrQueryA", APP_HTML)
+        self.assertIn("corrQueryB", APP_HTML)
+        self.assertIn("B购买状态", APP_HTML)
+        self.assertIn("B可买含限额", APP_HTML)
         self.assertIn("相关性分析", APP_HTML)
         self.assertIn("corrPrevPage", APP_HTML)
         self.assertIn("corrPageSize", APP_HTML)
         self.assertIn("B Sharpe", APP_HTML)
+        self.assertIn("基金名称匹配", APP_HTML)
+        self.assertIn("nameMatchQuery", APP_HTML)
+        self.assertIn("fund_type_a", APP_HTML)
+        self.assertNotIn("correlationHeatmap", APP_HTML)
+        self.assertNotIn("drawCorrelationHeatmap", APP_HTML)
         self.assertNotIn("screen-funds", APP_HTML)
 
     def test_search_funds_filters_by_coverage_index(self) -> None:
@@ -196,6 +210,23 @@ class ScreeningWebTests(unittest.TestCase):
 
         self.assertEqual([item["code"] for item in payload["items"]], ["000001"])
         self.assertEqual(payload["items"][0]["data_start"], "2019-01-01")
+
+    def test_search_funds_can_match_chinese_name_only(self) -> None:
+        catalog = pd.DataFrame(
+            [
+                {"code": "000001", "name": "国泰纳斯达克100指数", "fund_type": "指数型", "pinyin": "GTNSDK"},
+                {"code": "000002", "name": "其他基金", "fund_type": "纳斯达克主题", "pinyin": "NASIDAKE"},
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("fund_backtest.webapp.DEFAULT_COVERAGE_PATH", Path(tmp) / "missing.csv"), patch(
+                "fund_backtest.webapp.load_fund_catalog",
+                return_value=catalog,
+            ):
+                payload = search_funds_payload("纳斯达克", name_only=True, limit=10)
+
+        self.assertEqual([item["code"] for item in payload["items"]], ["000001"])
 
 
 if __name__ == "__main__":
