@@ -611,7 +611,7 @@ APP_HTML = r"""<!doctype html>
         <div class="charts">
           <section class="panel chart-box">
             <div class="chart-title">
-              <strong>资金曲线</strong>
+              <strong>盈亏曲线 (PnL)</strong>
               <div class="chart-actions">
                 <span id="valueScale"></span>
                 <button class="chart-reset" id="resetValueChart" type="button">重置</button>
@@ -1413,7 +1413,7 @@ APP_HTML = r"""<!doctype html>
       renderMetrics(data.metrics);
       renderAnnualMetrics(data.annual_metrics || []);
       renderHoldings(data.final_holdings);
-      drawLineChart("valueChart", data.series.map((row) => [row.date, row.total]), "#247d8f", "valueScale");
+      drawLineChart("valueChart", data.series.map((row) => [row.date, row.pnl]), "#247d8f", "valueScale");
       drawLineChart("drawdownChart", data.series.map((row) => [row.date, row.drawdown * 100]), "#bd3f45", "drawdownScale", "%");
     }
 
@@ -1543,6 +1543,19 @@ APP_HTML = r"""<!doctype html>
       ctx.fillText(formatAxis(max, suffix), 8, pad.top + 5);
       ctx.fillText(formatAxis(min, suffix), 8, pad.top + ch);
       drawXAxisTicks(ctx, rows, pad, width, height);
+
+      if (min < 0 && max > 0) {
+        const zeroY = pad.top + (1 - (0 - min) / (max - min)) * ch;
+        ctx.save();
+        ctx.strokeStyle = "#9aa5b1";
+        ctx.setLineDash([4, 4]);
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(pad.left, zeroY);
+        ctx.lineTo(pad.left + cw, zeroY);
+        ctx.stroke();
+        ctx.restore();
+      }
 
       ctx.strokeStyle = color;
       ctx.lineWidth = 2.3;
@@ -2066,6 +2079,7 @@ def serialize_backtest_result(
             {
                 "date": index.strftime("%Y-%m-%d"),
                 "total": float(row["total"]),
+                "pnl": float(row["total"]) - float(row.get("cumulative_contributions", 0.0)),
                 "drawdown": float(row["drawdown"]),
                 "cumulative_contributions": float(row.get("cumulative_contributions", 0.0)),
             }
