@@ -33,7 +33,7 @@ APP_HTML = r"""<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>基金回测系统</title>
+  <title>fund-lab</title>
   <style>
     :root {
       --bg: #f4f6f8;
@@ -527,7 +527,7 @@ APP_HTML = r"""<!doctype html>
   <div class="app">
     <header>
       <div class="brand">
-        <h1>基金回测系统</h1>
+        <h1>fund-lab</h1>
         <span id="rangeLabel" class="status">未运行</span>
       </div>
       <div id="status" class="status">就绪</div>

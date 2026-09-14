@@ -1,4 +1,4 @@
-# 基金回测系统 (jijin)
+# fund-lab
 
 基于天天基金（东方财富）公开数据的基金组合回测、筛选与相关性分析工具，自带本地网页界面，无需数据库，开箱即用。
 
@@ -66,7 +66,7 @@ print(result.metrics)
 ## 目录结构
 
 ```
-jijin/
+fund-lab/
 ├── fund_backtest/          # 核心包
 │   ├── backtest.py         #   回测引擎（再平衡、定投、指标计算）
 │   ├── cache.py            #   净值 CSV 本地缓存
