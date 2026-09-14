@@ -16,3 +16,6 @@ data/fund_cache/
 data/
 output/
 *.log
+
+.claude/
+.agents/

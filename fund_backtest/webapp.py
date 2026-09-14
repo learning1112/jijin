@@ -10,7 +10,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import pandas as pd
 
@@ -577,6 +577,12 @@ APP_HTML = r"""<!doctype html>
         <div class="actions">
           <button class="icon" id="addFund" type="button" title="添加基金">+</button>
           <button class="primary" id="runBacktest" type="button">运行回测</button>
+        </div>
+        <div class="actions">
+          <select id="portfolioSelect" title="已保存的方案"><option value="">选择方案…</option></select>
+          <button id="savePortfolio" type="button">保存方案</button>
+          <button id="loadPortfolio" type="button">加载</button>
+          <button id="deletePortfolio" type="button">删除</button>
         </div>
       </aside>
       <main>
@@ -1250,6 +1256,126 @@ APP_HTML = r"""<!doctype html>
       };
     }
 
+    async function loadPortfolioList() {
+      try {
+        const response = await fetch("/api/portfolios");
+        if (!response.ok) throw new Error("加载方案列表失败");
+        const data = await response.json();
+        const select = $("portfolioSelect");
+        const previous = select.value;
+        select.innerHTML = `<option value="">选择方案…</option>`;
+        (data.items || []).forEach((item) => {
+          const option = document.createElement("option");
+          option.value = item.name;
+          option.textContent = `${item.name} (${item.saved_at || ""})`;
+          select.appendChild(option);
+        });
+        if (previous && [...select.options].some((opt) => opt.value === previous)) {
+          select.value = previous;
+        }
+      } catch (error) {
+        setStatus(error.message || "加载方案列表失败", "error");
+      }
+    }
+
+    async function saveCurrentPortfolio() {
+      const current = $("portfolioSelect").value || "";
+      const name = window.prompt("请输入方案名称：", current);
+      if (name === null) {
+        setStatus("已取消保存");
+        return;
+      }
+      const trimmed = String(name).trim();
+      if (!trimmed) {
+        setStatus("已取消保存");
+        return;
+      }
+      try {
+        const response = await fetch("/api/portfolios", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: trimmed, payload: readPayload() })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "保存方案失败");
+        setStatus("方案已保存", "ok");
+        await loadPortfolioList();
+        $("portfolioSelect").value = trimmed;
+      } catch (error) {
+        setStatus(error.message || "保存方案失败", "error");
+      }
+    }
+
+    async function loadSelectedPortfolio() {
+      const name = $("portfolioSelect").value;
+      if (!name) {
+        setStatus("请先选择方案", "error");
+        return;
+      }
+      try {
+        const response = await fetch(`/api/portfolios/${encodeURIComponent(name)}`);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "加载方案失败");
+        applyPortfolioPayload(data.payload);
+        updateContributionWeekdayState();
+        setStatus(`已加载方案：${name}`, "ok");
+      } catch (error) {
+        setStatus(error.message || "加载方案失败", "error");
+      }
+    }
+
+    async function deleteSelectedPortfolio() {
+      const name = $("portfolioSelect").value;
+      if (!name) {
+        setStatus("请先选择方案", "error");
+        return;
+      }
+      if (!window.confirm(`确定删除方案「${name}」吗？`)) {
+        setStatus("已取消删除");
+        return;
+      }
+      try {
+        const response = await fetch("/api/portfolios/delete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "删除方案失败");
+        setStatus(`已删除方案：${name}`, "ok");
+        await loadPortfolioList();
+      } catch (error) {
+        setStatus(error.message || "删除方案失败", "error");
+      }
+    }
+
+    function applyPortfolioPayload(payload) {
+      if (!payload || typeof payload !== "object") return;
+      document.querySelectorAll(".fund-row").forEach((row) => row.remove());
+      if (Array.isArray(payload.funds) && payload.funds.length) {
+        payload.funds.forEach((f) => addFundRow(f.code, f.weight));
+      } else {
+        addFundRow();
+      }
+      const setVal = (id, v) => {
+        if (v != null) $(id).value = v;
+      };
+      const setChecked = (id, v) => {
+        if (v != null) $(id).checked = !!v;
+      };
+      setVal("initialCash", payload.initial_cash);
+      setVal("startDate", payload.start);
+      setVal("endDate", payload.end);
+      setVal("minHistoryYears", payload.min_history_years);
+      setVal("rebalanceFrequency", payload.rebalance_frequency);
+      setVal("feeRate", payload.fee_rate);
+      setVal("contributionAmount", payload.contribution_amount);
+      setVal("contributionFrequency", payload.contribution_frequency);
+      setVal("contributionWeekday", payload.contribution_weekday);
+      setVal("cacheDir", payload.cache_dir);
+      setChecked("refresh", payload.refresh);
+    }
+
     function updateContributionWeekdayState() {
       const weekly = $("contributionFrequency").value === "weekly";
       $("contributionWeekdayLabel").hidden = !weekly;
@@ -1597,6 +1723,9 @@ APP_HTML = r"""<!doctype html>
     $("resetValueChart").addEventListener("click", () => resetChart("valueChart"));
     $("resetDrawdownChart").addEventListener("click", () => resetChart("drawdownChart"));
     $("contributionFrequency").addEventListener("change", updateContributionWeekdayState);
+    $("savePortfolio").addEventListener("click", saveCurrentPortfolio);
+    $("loadPortfolio").addEventListener("click", loadSelectedPortfolio);
+    $("deletePortfolio").addEventListener("click", deleteSelectedPortfolio);
     window.addEventListener("resize", () => {
       if (state.result) renderAll(state.result);
     });
@@ -1612,6 +1741,7 @@ APP_HTML = r"""<!doctype html>
     renderNameMatchResults([]);
     updateContributionWeekdayState();
     refreshDataStatus();
+    loadPortfolioList();
     loadCorrelations();
   </script>
 </body>
@@ -1753,6 +1883,18 @@ class BacktestRequestHandler(BaseHTTPRequestHandler):
                 return
             self._send_json(job)
             return
+        if parsed.path == "/api/portfolios":
+            self._send_json({"items": list_portfolios()})
+            return
+        if parsed.path.startswith("/api/portfolios/"):
+            name = unquote(parsed.path[len("/api/portfolios/"):])
+            try:
+                self._send_json(load_portfolio(name))
+            except FileNotFoundError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:
@@ -1797,6 +1939,26 @@ class BacktestRequestHandler(BaseHTTPRequestHandler):
                     ),
                 )
                 self._send_json(job, status=HTTPStatus.ACCEPTED)
+                return
+            if parsed.path == "/api/portfolios":
+                body = self._read_json()
+                name = str(body.get("name", "")).strip()
+                payload = body.get("payload", body)
+                try:
+                    self._send_json(save_portfolio(name, payload))
+                except ValueError as exc:
+                    self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
+            if parsed.path == "/api/portfolios/delete":
+                body = self._read_json()
+                name = str(body.get("name", "")).strip()
+                try:
+                    delete_portfolio(name)
+                    self._send_json({"ok": True, "name": name})
+                except FileNotFoundError as exc:
+                    self._send_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
+                except ValueError as exc:
+                    self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
         except Exception as exc:  # noqa: BLE001
@@ -2111,6 +2273,79 @@ def _json_safe(value: Any) -> Any:
     except (TypeError, ValueError):
         pass
     return value
+
+
+_PORTFOLIOS_DIR = Path("data/portfolios")
+_PORTFOLIOS_LOCK = threading.Lock()
+
+
+def _sanitize_portfolio_name(name: str) -> str:
+    text = str(name).strip()
+    if not text:
+        raise ValueError("方案名称不能为空")
+    if len(text) > 64:
+        raise ValueError("方案名称过长（最多 64 个字符）")
+    if "/" in text or "\\" in text:
+        raise ValueError("方案名称不能包含斜杠")
+    if any(ord(ch) < 32 for ch in text):
+        raise ValueError("方案名称不能包含控制字符")
+    if text in {".", ".."}:
+        raise ValueError("方案名称不能为 . 或 ..")
+    return text
+
+
+def _portfolio_path(name: str, base_dir: Path | None = None) -> Path:
+    safe_name = _sanitize_portfolio_name(name)
+    directory = base_dir if base_dir is not None else _PORTFOLIOS_DIR
+    return Path(directory) / f"{safe_name}.json"
+
+
+def save_portfolio(name: str, payload: Any, base_dir: Path | None = None) -> dict[str, Any]:
+    directory = base_dir if base_dir is not None else _PORTFOLIOS_DIR
+    directory = Path(directory)
+    path = _portfolio_path(name, base_dir=directory)
+    wrapper = {
+        "name": _sanitize_portfolio_name(name),
+        "saved_at": _timestamp_text(),
+        "payload": payload,
+    }
+    directory.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(wrapper, ensure_ascii=False, indent=2)
+    with _PORTFOLIOS_LOCK:
+        path.write_text(text, encoding="utf-8")
+    return wrapper
+
+
+def load_portfolio(name: str, base_dir: Path | None = None) -> dict[str, Any]:
+    path = _portfolio_path(name, base_dir=base_dir)
+    if not path.exists():
+        raise FileNotFoundError(f"方案不存在：{path.name}")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def delete_portfolio(name: str, base_dir: Path | None = None) -> None:
+    path = _portfolio_path(name, base_dir=base_dir)
+    if not path.exists():
+        raise FileNotFoundError(f"方案不存在：{path.name}")
+    with _PORTFOLIOS_LOCK:
+        path.unlink()
+
+
+def list_portfolios(base_dir: Path | None = None) -> list[dict[str, Any]]:
+    directory = Path(base_dir) if base_dir is not None else _PORTFOLIOS_DIR
+    if not directory.exists():
+        return []
+    items: list[dict[str, Any]] = []
+    for path in sorted(directory.glob("*.json")):
+        try:
+            wrapper = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(wrapper, dict):
+            continue
+        items.append({"name": wrapper.get("name"), "saved_at": wrapper.get("saved_at")})
+    items.sort(key=lambda item: item.get("saved_at") or "", reverse=True)
+    return items
 
 
 if __name__ == "__main__":
